@@ -12,7 +12,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 public class PostgreSQLContainerInitializer implements ApplicationContextInitializer<ConfigurableApplicationContext> {
 
     public JdbcDatabaseContainer<?> newPostgresContainer() {
-        return new PostgreSQLContainer<>().withExposedPorts(1234);
+        return new PostgreSQLContainer<>();
     }
 
     public void initialize(ConfigurableApplicationContext configurableApplicationContext) {

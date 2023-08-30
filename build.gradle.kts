@@ -21,6 +21,8 @@ dependencies {
     implementation("io.fabric8:kubernetes-client:6.8.1")
     implementation("commons-codec:commons-codec:1.16.0")
     implementation("org.slf4j:slf4j-api:2.0.7")
+    implementation("org.awaitility:awaitility:4.2.0")
+    implementation("org.apache.commons:commons-lang3:3.13.0")
 
     testImplementation(platform("org.junit:junit-bom:5.9.1"))
     testImplementation("org.junit.jupiter:junit-jupiter")

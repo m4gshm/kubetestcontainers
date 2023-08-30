@@ -14,7 +14,7 @@ import java.time.Duration;
 public class PostgreSQLPodInitializer implements ApplicationContextInitializer<ConfigurableApplicationContext> {
 
     public JdbcDatabaseContainer<?> newPostgresContainer() {
-        return new PostgreSQLPod<>().withStartTimeout(Duration.ofSeconds(10));
+        return new PostgreSQLPod<>().withStartupTimeout(Duration.ofSeconds(30));
     }
 
     public void initialize(ConfigurableApplicationContext configurableApplicationContext) {

@@ -1,7 +1,17 @@
 package com.github.m4gshm.testcontainers;
 
+import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.command.InspectContainerResponse;
-import io.fabric8.kubernetes.api.model.*;
+import io.fabric8.kubernetes.api.model.ContainerBuilder;
+import io.fabric8.kubernetes.api.model.ContainerPort;
+import io.fabric8.kubernetes.api.model.ContainerPortBuilder;
+import io.fabric8.kubernetes.api.model.EnvVar;
+import io.fabric8.kubernetes.api.model.LocalObjectReferenceBuilder;
+import io.fabric8.kubernetes.api.model.ObjectMetaBuilder;
+import io.fabric8.kubernetes.api.model.PodBuilder;
+import io.fabric8.kubernetes.api.model.PodSecurityContextBuilder;
+import io.fabric8.kubernetes.api.model.PodSpecBuilder;
+import io.fabric8.kubernetes.api.model.SecurityContextBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClientBuilder;
 import io.fabric8.kubernetes.client.LocalPortForward;
@@ -11,6 +21,7 @@ import lombok.NonNull;
 import lombok.extern.slf4j.Slf4j;
 import org.jetbrains.annotations.NotNull;
 import org.testcontainers.containers.JdbcDatabaseContainer;
+import org.testcontainers.containers.output.OutputFrame;
 import org.testcontainers.images.ImagePullPolicy;
 import org.testcontainers.images.PullPolicy;
 import org.testcontainers.utility.DockerImageName;
@@ -22,6 +33,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.UnaryOperator;
 
+import static java.lang.Boolean.TRUE;
 import static java.util.stream.Collectors.toMap;
 import static lombok.AccessLevel.PROTECTED;
 
@@ -34,11 +46,17 @@ public abstract class GenericPod<T extends GenericPod<T>> extends JdbcDatabaseCo
     protected final String dockerImageName;
     protected KubernetesClient kubernetesClient;
     @Getter
-    private boolean runAsNonRoot;
+    protected Boolean runAsNonRoot;
     @Getter
-    private long runAsUser;
+    protected Long runAsUser;
     @Getter
-    private long fsGroup;
+    protected Long fsGroup;
+    protected boolean privilegedMode;
+    protected String imagePullPolicy = "Always";
+    @Getter
+    protected Duration startupTimeout = Duration.ofSeconds(60);
+    @Getter
+    protected String portProtocol = "TCP";
     @Getter(PROTECTED)
     private PodResource podResource;
     private Map<Integer, LocalPortForward> localPortForwards;
@@ -48,15 +66,9 @@ public abstract class GenericPod<T extends GenericPod<T>> extends JdbcDatabaseCo
     private UnaryOperator<PodBuilder> podBuilderCustomizer;
     @Getter
     private String podContainerName = "main";
-    private boolean privilegedMode;
     private String podName;
-    private String imagePullPolicy = "Always";
     @Getter(PROTECTED)
     private boolean started;
-    @Getter
-    private Duration startTimeout = Duration.ofSeconds(60);
-    @Getter
-    private String portProtocol = "TCP";
 
     public GenericPod(@NonNull String dockerImageName) {
         this(dockerImageName, new KubernetesClientBuilder().build(), new DefaultPodNameGenerator());
@@ -71,6 +83,11 @@ public abstract class GenericPod<T extends GenericPod<T>> extends JdbcDatabaseCo
     }
 
     @Override
+    public DockerClient getDockerClient() {
+        throw new UnsupportedOperationException("getDockerClient");
+    }
+
+    @Override
     public T withImagePullPolicy(ImagePullPolicy imagePullPolicy) {
         if (imagePullPolicy == null) {
             this.imagePullPolicy = "Never";
@@ -82,17 +99,17 @@ public abstract class GenericPod<T extends GenericPod<T>> extends JdbcDatabaseCo
         return self();
     }
 
-    public T withRunAsNonRoot(boolean runAsNonRoot) {
+    public T withRunAsNonRoot(Boolean runAsNonRoot) {
         this.runAsNonRoot = runAsNonRoot;
         return self();
     }
 
-    public T withRunAsUser(long runAsUser) {
+    public T withRunAsUser(Long runAsUser) {
         this.runAsUser = runAsUser;
         return self();
     }
 
-    public T withFsGroup(long fsGroup) {
+    public T withFsGroup(Long fsGroup) {
         this.fsGroup = fsGroup;
         return self();
     }
@@ -123,8 +140,8 @@ public abstract class GenericPod<T extends GenericPod<T>> extends JdbcDatabaseCo
         return self();
     }
 
-    public T withStartTimeout(Duration startTimeout) {
-        this.startTimeout = startTimeout;
+    public T withStartupTimeout(Duration startTimeout) {
+        this.startupTimeout = startTimeout;
         return self();
     }
 
@@ -176,6 +193,16 @@ public abstract class GenericPod<T extends GenericPod<T>> extends JdbcDatabaseCo
     }
 
     @Override
+    public String getLogs() {
+        return podResource.getLog();
+    }
+
+    @Override
+    public String getLogs(OutputFrame.OutputType... types) {
+        return getLogs();
+    }
+
+    @Override
     public void start() {
         var podName = podNameGenerator.generatePodName();
         this.podName = podName;
@@ -201,6 +228,7 @@ public abstract class GenericPod<T extends GenericPod<T>> extends JdbcDatabaseCo
                                         .withPrivileged(privilegedMode)
                                         .build())
                                 .withName(podContainerName)
+                                .withArgs(getCommandParts())
                                 .withPorts(buildContainerPorts())
                                 .withEnv(getEnvVars())
                                 .build())
@@ -215,8 +243,9 @@ public abstract class GenericPod<T extends GenericPod<T>> extends JdbcDatabaseCo
         var pod = kubernetesClient.resource(podBuilder.build()).create();
         podResource = kubernetesClient.pods().resource(pod);
 
-        waitReady();
+        waitUntilPodStarted();
         startPortForward();
+        waitUntilContainerStarted();
         runInitScriptIfRequired();
         this.started = true;
     }
@@ -236,7 +265,7 @@ public abstract class GenericPod<T extends GenericPod<T>> extends JdbcDatabaseCo
         }
     }
 
-    protected void waitReady() {
+    protected void waitUntilPodStarted() {
         var startTime = System.currentTimeMillis();
         var pod = podResource.get();
         var status = pod.getStatus();
@@ -247,18 +276,20 @@ public abstract class GenericPod<T extends GenericPod<T>> extends JdbcDatabaseCo
             for (var containerStatus : status.getContainerStatuses()) {
                 var state = containerStatus.getState();
                 var waiting = state.getWaiting();
-                var reason = waiting.getReason();
-                if (Set.of("CreateContainerError", "CreateContainerConfigError", "PreCreateHookError",
-                        "PreStartHookError", "PostStartHookError").contains(reason)) {
-                    var containerName = containerStatus.getName();
-                    throw new StartPodException("container error waiting status, container '" + containerName +
-                            "', message '" + waiting.getMessage() + "', reason '" + reason + "'",
-                            podName, phase);
+                if (waiting != null) {
+                    var reason = waiting.getReason();
+                    if (Set.of("CreateContainerError", "CreateContainerConfigError", "PreCreateHookError",
+                            "PreStartHookError", "PostStartHookError").contains(reason)) {
+                        var containerName = containerStatus.getName();
+                        throw new StartPodException("container error waiting status, container '" + containerName +
+                                "', message '" + waiting.getMessage() + "', reason '" + reason + "'",
+                                podName, phase);
+                    }
                 }
             }
 
             var time = System.currentTimeMillis();
-            if (startTimeout.toMillis() < time - startTime) {
+            if (startupTimeout.toMillis() < time - startTime) {
                 throw new StartTimeoutException(podName, phase);
             }
             try {
@@ -270,9 +301,33 @@ public abstract class GenericPod<T extends GenericPod<T>> extends JdbcDatabaseCo
             status = podResource.get().getStatus();
         }
 
-        if (!RUNNING.equals(status.getPhase())) {
-            podResource.delete();
-            throw new UnexpectedPodStatusException(pod.getMetadata().getName(), status.getPhase());
+        try {
+            if (!RUNNING.equals(status.getPhase())) {
+                podResource.delete();
+                throw new StartPodException("unexpected pod status", pod.getMetadata().getName(), status.getPhase());
+            }
+
+            for (var containerStatus : status.getContainerStatuses()) {
+                var ready = TRUE.equals(containerStatus.getReady());
+                if (!ready) {
+                    var terminated = containerStatus.getState().getTerminated();
+                    var exitCode = terminated != null ? terminated.getExitCode() : null;
+                    var reason = terminated != null ? terminated.getReason() : null;
+                    throw new StartPodException("container is not ready, container " + containerStatus.getName() +
+                            (exitCode != null ? ", exitCode " + exitCode : "") + (reason != null ? ", reason " + reason : ""),
+                            pod.getMetadata().getName(), status.getPhase());
+                }
+            }
+        } catch (StartPodException se) {
+            try {
+                var logs = getLogs();
+                if (!logs.isEmpty()) {
+                    logger().error("failed pod logs:\n{}", logs);
+                }
+            } catch (Exception lre) {
+                log.error("log reading error", lre);
+            }
+            throw se;
         }
     }
 
@@ -310,7 +365,7 @@ public abstract class GenericPod<T extends GenericPod<T>> extends JdbcDatabaseCo
                 ", podName='" + podName + '\'' +
                 ", imagePullPolicy='" + imagePullPolicy + '\'' +
                 ", started=" + started +
-                ", startTimeout=" + startTimeout +
+                ", startTimeout=" + startupTimeout +
                 ", portProtocol='" + portProtocol + '\'' +
                 '}';
     }

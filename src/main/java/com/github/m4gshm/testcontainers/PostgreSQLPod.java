@@ -2,43 +2,50 @@ package com.github.m4gshm.testcontainers;
 
 import io.fabric8.kubernetes.api.model.EnvVar;
 import io.fabric8.kubernetes.api.model.EnvVarBuilder;
+import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.List;
+import java.util.Set;
+
+import static java.time.Duration.ofSeconds;
 
 @Slf4j
 public class PostgreSQLPod<T extends PostgreSQLPod<T>> extends GenericPod<T> {
 
     public static final int POSTGRESQL_DEFAULT_PORT = 5432;
-    public static final String IMAGE = "postgres";
-    public static final String DEFAULT_TAG = "9.6.12";
     public static final long POSTGRES_USER_ID = 999L;
     public static final long POSTGRES_GROUP_ID = 999L;
-    private static final Integer POSTGRESQL_PORT = 5432;
     private final String driverName = "org.postgresql.Driver";
 
     private String host = "localhost";
+    @Getter
+    private int jdbcPort = POSTGRESQL_DEFAULT_PORT;
     private String databaseName = "test";
     private String username = "test";
     private String password = "test";
 
     public PostgreSQLPod() {
-        this(IMAGE + ":" + DEFAULT_TAG);
+        this("postgres:9.6.12");
     }
 
     PostgreSQLPod(final String dockerImageName) {
         super(dockerImageName);
 
-        withRunAsNonRoot(true);
-        withRunAsUser(POSTGRES_USER_ID);
-        withFsGroup(POSTGRES_GROUP_ID);
+        runAsNonRoot = true;
+        runAsUser = POSTGRES_USER_ID;
+        fsGroup = POSTGRES_GROUP_ID;
 
-        addExposedPort(POSTGRESQL_PORT);
+        waitStrategy = new PodLogMessageWaitStrategy()
+                .withRegEx(".*database system is ready to accept connections.*\\s")
+                .withStartupTimeout(ofSeconds(60));
+
+        setCommand("postgres", "-c", "fsync=off");
     }
 
-    @Override
-    public T withInitScript(String initScriptPath) {
-        return super.withInitScript(initScriptPath);
+    public T withJdbcPort(int jdbcPort) {
+        this.jdbcPort = jdbcPort;
+        return self();
     }
 
     @Override
@@ -47,19 +54,27 @@ public class PostgreSQLPod<T extends PostgreSQLPod<T>> extends GenericPod<T> {
         return self();
     }
 
+    @Override
     public T withUsername(String username) {
         this.username = username;
         return self();
     }
 
+    @Override
     public T withPassword(String password) {
         this.password = password;
         return self();
     }
 
     @Override
+    protected void waitUntilContainerStarted() {
+        waitStrategy.waitUntilReady(this);
+        super.waitUntilContainerStarted();
+    }
+
+    @Override
     public String getJdbcUrl() {
-        return "jdbc:postgresql://" + getHost() + ":" + getMappedPort(POSTGRESQL_DEFAULT_PORT) + "/" +
+        return "jdbc:postgresql://" + getHost() + ":" + getMappedPort(getJdbcPort()) + "/" +
                 getDatabaseName() + constructUrlParameters("?", "&");
     }
 
@@ -86,6 +101,12 @@ public class PostgreSQLPod<T extends PostgreSQLPod<T>> extends GenericPod<T> {
     @Override
     public String getPassword() {
         return password;
+    }
+
+    @Override
+    public void start() {
+        addExposedPort(jdbcPort);
+        super.start();
     }
 
     @Override
