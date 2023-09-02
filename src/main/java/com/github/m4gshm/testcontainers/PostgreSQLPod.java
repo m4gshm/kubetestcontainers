@@ -1,14 +1,12 @@
 package com.github.m4gshm.testcontainers;
 
+import com.github.m4gshm.testcontainers.wait.PodLogMessageWaitStrategy;
 import io.fabric8.kubernetes.api.model.EnvVar;
 import io.fabric8.kubernetes.api.model.EnvVarBuilder;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.List;
-import java.util.Set;
-
-import static java.time.Duration.ofSeconds;
 
 @Slf4j
 public class PostgreSQLPod<T extends PostgreSQLPod<T>> extends GenericPod<T> {
@@ -18,7 +16,6 @@ public class PostgreSQLPod<T extends PostgreSQLPod<T>> extends GenericPod<T> {
     public static final long POSTGRES_GROUP_ID = 999L;
     private final String driverName = "org.postgresql.Driver";
 
-    private String host = "localhost";
     @Getter
     private int jdbcPort = POSTGRESQL_DEFAULT_PORT;
     private String databaseName = "test";
@@ -38,7 +35,7 @@ public class PostgreSQLPod<T extends PostgreSQLPod<T>> extends GenericPod<T> {
 
         waitStrategy = new PodLogMessageWaitStrategy()
                 .withRegEx(".*database system is ready to accept connections.*\\s")
-                .withStartupTimeout(ofSeconds(60));
+                .withStartupTimeout(startupTimeout);
 
         setCommand("postgres", "-c", "fsync=off");
     }
@@ -81,11 +78,6 @@ public class PostgreSQLPod<T extends PostgreSQLPod<T>> extends GenericPod<T> {
     @Override
     public String getDriverClassName() {
         return driverName;
-    }
-
-    @Override
-    public String getHost() {
-        return host;
     }
 
     @Override

@@ -9,4 +9,8 @@ public class StartPodException extends RuntimeException {
         super(errorDescription + ", " + "podName " + podName + ", phase " + phase, cause);
     }
 
+    public StartPodException(String errorDescription, String podName, Throwable cause) {
+        super(errorDescription + ", " + "podName " + podName, cause);
+    }
+
 }

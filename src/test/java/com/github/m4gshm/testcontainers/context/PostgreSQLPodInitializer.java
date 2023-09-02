@@ -10,11 +10,13 @@ import org.testcontainers.containers.JdbcDatabaseContainer;
 
 import java.time.Duration;
 
+import static java.time.Duration.ofSeconds;
+
 @Slf4j
 public class PostgreSQLPodInitializer implements ApplicationContextInitializer<ConfigurableApplicationContext> {
 
     public JdbcDatabaseContainer<?> newPostgresContainer() {
-        return new PostgreSQLPod<>().withStartupTimeout(Duration.ofSeconds(30));
+        return new PostgreSQLPod<>().withStartupTimeout(ofSeconds(30)).withDeletePodOnStop(false);
     }
 
     public void initialize(ConfigurableApplicationContext configurableApplicationContext) {

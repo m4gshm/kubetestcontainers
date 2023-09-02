@@ -2,16 +2,8 @@ package com.github.m4gshm.testcontainers;
 
 import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.command.InspectContainerResponse;
-import io.fabric8.kubernetes.api.model.ContainerBuilder;
-import io.fabric8.kubernetes.api.model.ContainerPort;
-import io.fabric8.kubernetes.api.model.ContainerPortBuilder;
-import io.fabric8.kubernetes.api.model.EnvVar;
-import io.fabric8.kubernetes.api.model.LocalObjectReferenceBuilder;
-import io.fabric8.kubernetes.api.model.ObjectMetaBuilder;
-import io.fabric8.kubernetes.api.model.PodBuilder;
-import io.fabric8.kubernetes.api.model.PodSecurityContextBuilder;
-import io.fabric8.kubernetes.api.model.PodSpecBuilder;
-import io.fabric8.kubernetes.api.model.SecurityContextBuilder;
+import com.github.m4gshm.testcontainers.wait.PodPortWaitStrategy;
+import io.fabric8.kubernetes.api.model.*;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClientBuilder;
 import io.fabric8.kubernetes.client.LocalPortForward;
@@ -22,6 +14,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.jetbrains.annotations.NotNull;
 import org.testcontainers.containers.JdbcDatabaseContainer;
 import org.testcontainers.containers.output.OutputFrame;
+import org.testcontainers.containers.wait.strategy.WaitStrategy;
 import org.testcontainers.images.ImagePullPolicy;
 import org.testcontainers.images.PullPolicy;
 import org.testcontainers.utility.DockerImageName;
@@ -34,6 +27,8 @@ import java.util.Set;
 import java.util.function.UnaryOperator;
 
 import static java.lang.Boolean.TRUE;
+import static java.time.Duration.ofSeconds;
+import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toMap;
 import static lombok.AccessLevel.PROTECTED;
 
@@ -54,7 +49,7 @@ public abstract class GenericPod<T extends GenericPod<T>> extends JdbcDatabaseCo
     protected boolean privilegedMode;
     protected String imagePullPolicy = "Always";
     @Getter
-    protected Duration startupTimeout = Duration.ofSeconds(60);
+    protected Duration startupTimeout = ofSeconds(60);
     @Getter
     protected String portProtocol = "TCP";
     @Getter(PROTECTED)
@@ -67,6 +62,7 @@ public abstract class GenericPod<T extends GenericPod<T>> extends JdbcDatabaseCo
     @Getter
     private String podContainerName = "main";
     private String podName;
+    private boolean deletePodOnStop = true;
     @Getter(PROTECTED)
     private boolean started;
 
@@ -80,6 +76,7 @@ public abstract class GenericPod<T extends GenericPod<T>> extends JdbcDatabaseCo
         this.kubernetesClient = kubernetesClient;
         this.podNameGenerator = podNameGenerator;
         this.dockerImageName = dockerImageName;
+        this.waitStrategy = new PodPortWaitStrategy(this).withStartupTimeout(startupTimeout);
     }
 
     @Override
@@ -135,6 +132,14 @@ public abstract class GenericPod<T extends GenericPod<T>> extends JdbcDatabaseCo
     }
 
     @Override
+    public T waitingFor(@NonNull WaitStrategy waitStrategy) {
+        if (waitStrategy instanceof PodAware podAware) {
+            podAware.withPod(this);
+        }
+        return super.waitingFor(waitStrategy);
+    }
+
+    @Override
     public T withPrivilegedMode(boolean privilegedMode) {
         this.privilegedMode = privilegedMode;
         return self();
@@ -142,6 +147,12 @@ public abstract class GenericPod<T extends GenericPod<T>> extends JdbcDatabaseCo
 
     public T withStartupTimeout(Duration startTimeout) {
         this.startupTimeout = startTimeout;
+        this.waitStrategy = this.waitStrategy.withStartupTimeout(startupTimeout);
+        return self();
+    }
+
+    public T withDeletePodOnStop(boolean deletePodOnStop) {
+        this.deletePodOnStop = deletePodOnStop;
         return self();
     }
 
@@ -185,11 +196,11 @@ public abstract class GenericPod<T extends GenericPod<T>> extends JdbcDatabaseCo
 
     @Override
     public Integer getMappedPort(int originalPort) {
-        var localPortForward = this.localPortForwards.get(originalPort);
-        if (localPortForward == null) {
-            throw new IllegalArgumentException("Requested port (" + originalPort + ") is not mapped");
-        }
-        return localPortForward.getLocalPort();
+        return getLocalPortForward(originalPort).getLocalPort();
+    }
+
+    public String getMappedPortHost(int originalPort) {
+        return getLocalPortForward(originalPort).getLocalAddress().getHostName();
     }
 
     @Override
@@ -200,6 +211,12 @@ public abstract class GenericPod<T extends GenericPod<T>> extends JdbcDatabaseCo
     @Override
     public String getLogs(OutputFrame.OutputType... types) {
         return getLogs();
+    }
+
+    @Override
+    public String getHost() {
+        return getLocalPortForwards().values().stream().findFirst()
+                .map(lp -> lp.getLocalAddress().getHostName()).orElse("localhost");
     }
 
     @Override
@@ -259,9 +276,11 @@ public abstract class GenericPod<T extends GenericPod<T>> extends JdbcDatabaseCo
                 log.error("close port forward error, {}", e.getMessage(), e);
             }
         }
-        var podResource = this.podResource;
-        if (podResource != null) {
-            podResource.delete();
+        if (deletePodOnStop) {
+            var podResource = this.podResource;
+            if (podResource != null) {
+                podResource.delete();
+            }
         }
     }
 
@@ -344,10 +363,30 @@ public abstract class GenericPod<T extends GenericPod<T>> extends JdbcDatabaseCo
             var localPortForward = podResource.portForward(port);
             var localAddress = localPortForward.getLocalAddress();
             var localPort = localPortForward.getLocalPort();
-            log.info("port forward local {}:{} to remote port {}", localAddress.getHostAddress(), localPort, port);
+            if (localPortForward.errorOccurred()) {
+                var clientThrowables = localPortForward.getClientThrowables();
+                if (!clientThrowables.isEmpty()) {
+                    var throwable = clientThrowables.iterator().next();
+                    throw new StartPodException("port forward client error", podName, throwable);
+                }
+                var serverThrowables = localPortForward.getServerThrowables();
+                if (!serverThrowables.isEmpty()) {
+                    var throwable = serverThrowables.iterator().next();
+                    throw new StartPodException("port forward server error", podName, throwable);
+                }
+            } else {
+                log.info("port forward local {}:{} to remote port {}, ", localAddress.getHostAddress(), localPort, port);
+            }
             return localPortForward;
         }));
+    }
 
+    protected Map<Integer, LocalPortForward> getLocalPortForwards() {
+        return requireNonNull(localPortForwards, "port forwarding has not been started yet");
+    }
+
+    protected LocalPortForward getLocalPortForward(int originalPort) {
+        return requireNonNull(getLocalPortForwards().get(originalPort), "Requested port (" + originalPort + ") is not mapped");
     }
 
     protected abstract List<EnvVar> getEnvVars();

@@ -1,4 +1,4 @@
-package com.github.m4gshm.testcontainers;
+package com.github.m4gshm.testcontainers.wait;
 
 import lombok.AllArgsConstructor;
 import lombok.NoArgsConstructor;
@@ -21,19 +21,19 @@ public class PodLogMessageWaitStrategy extends AbstractWaitStrategy {
     protected void waitUntilReady() {
         var startTime = System.currentTimeMillis();
         var timeout = startTime + TimeUnit.SECONDS.toMillis(startupTimeout.getSeconds());
-        var matches = false;
         var logs = "";
-        while (!matches) {
+        while (true) {
             logs = waitStrategyTarget.getLogs();
-            matches = logs.matches("(?s)" + regEx);
+            if (logs.matches("(?s)" + regEx)) {
+                break;
+            }
+            if (timeout <= System.currentTimeMillis()) {
+                throw new ContainerLaunchException("Timed out waiting for log output matching '" + regEx + "'");
+            }
             try {
                 Thread.sleep(10);
             } catch (InterruptedException e) {
                 throw new ContainerLaunchException("waitUntilReady is interrupted", e);
-            }
-
-            if (timeout <= System.currentTimeMillis()) {
-                throw new ContainerLaunchException("Timed out waiting for log output matching '" + regEx + "'");
             }
         }
         log.trace("log waiter is finished, regExp {}, log:\n{}", regEx, logs);
