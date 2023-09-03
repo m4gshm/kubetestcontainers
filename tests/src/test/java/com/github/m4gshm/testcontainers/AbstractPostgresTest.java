@@ -2,6 +2,7 @@ package com.github.m4gshm.testcontainers;
 
 import com.github.m4gshm.test.jpa.model.UserEntity;
 import com.github.m4gshm.test.jpa.service.UserRepository;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
@@ -23,7 +24,7 @@ abstract class AbstractPostgresTest {
                 .build());
 
         var user = userRepository.findById(1).get();
-        assertEquals("First", user.getName());
+        Assertions.assertEquals("First", user.getName());
     }
 
     @Configuration
