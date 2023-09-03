@@ -1,6 +1,5 @@
 package com.github.m4gshm.testcontainers;
 
-import com.github.m4gshm.testcontainers.context.PostgreSQLPodInitializer;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ContextConfiguration;
 

@@ -1,22 +1,22 @@
-package com.github.m4gshm.testcontainers.context;
+package com.github.m4gshm.testcontainers;
 
-import lombok.extern.slf4j.Slf4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.test.util.TestPropertyValues;
 import org.springframework.context.ApplicationContextInitializer;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.event.ContextClosedEvent;
 import org.testcontainers.containers.JdbcDatabaseContainer;
-import org.testcontainers.containers.PostgreSQLContainer;
 
-@Slf4j
-public class PostgreSQLContainerInitializer implements ApplicationContextInitializer<ConfigurableApplicationContext> {
+public abstract class AbstractJdbcDatabaseContainerInitializer implements ApplicationContextInitializer<ConfigurableApplicationContext> {
 
-    public JdbcDatabaseContainer<?> newPostgresContainer() {
-        return new PostgreSQLContainer<>();
-    }
+    private final Logger log = LoggerFactory.getLogger(getClass());
 
+    protected abstract JdbcDatabaseContainer<?> newContainer();
+
+    @Override
     public void initialize(ConfigurableApplicationContext configurableApplicationContext) {
-        var container = newPostgresContainer();
+        var container = newContainer();
         configurableApplicationContext.addApplicationListener(event -> {
             if (event instanceof ContextClosedEvent) {
                 log.info("stop testcontainer {}, jdbc url {} ", container.getContainerName(), container.getJdbcUrl());
@@ -33,5 +33,4 @@ public class PostgreSQLContainerInitializer implements ApplicationContextInitial
 
         log.info("start testcontainer {}, jdbc url {} ", container.getContainerName(), container.getJdbcUrl());
     }
-
 }
