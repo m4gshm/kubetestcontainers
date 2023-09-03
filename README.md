@@ -1,9 +1,12 @@
 # Testcontainers on kubernetes
 
-under construction
+Under construction.
 
-goal is Postgresql and Redis support
+Goal is Postgresql and Redis support.
 
-to build run `./gradlew build`
+To build run `./gradlew build`
 
-see tests as an example [here](./src/test/java/com/github/m4gshm/testcontainers) 
+See tests as an example [here](./src/test/java/com/github/m4gshm/testcontainers).
+
+
+And don't forget to install [Minikube](https://kubernetes.io/ru/docs/tasks/tools/install-minikube/) locally for staging.
