@@ -3,7 +3,16 @@ package com.github.m4gshm.testcontainers;
 import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.command.InspectContainerResponse;
 import com.github.m4gshm.testcontainers.wait.PodPortWaitStrategy;
-import io.fabric8.kubernetes.api.model.*;
+import io.fabric8.kubernetes.api.model.ContainerBuilder;
+import io.fabric8.kubernetes.api.model.ContainerPort;
+import io.fabric8.kubernetes.api.model.ContainerPortBuilder;
+import io.fabric8.kubernetes.api.model.EnvVar;
+import io.fabric8.kubernetes.api.model.LocalObjectReferenceBuilder;
+import io.fabric8.kubernetes.api.model.ObjectMetaBuilder;
+import io.fabric8.kubernetes.api.model.PodBuilder;
+import io.fabric8.kubernetes.api.model.PodSecurityContextBuilder;
+import io.fabric8.kubernetes.api.model.PodSpecBuilder;
+import io.fabric8.kubernetes.api.model.SecurityContextBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClientBuilder;
 import io.fabric8.kubernetes.client.LocalPortForward;
@@ -93,6 +102,11 @@ public abstract class GenericPod<T extends GenericPod<T>> extends JdbcDatabaseCo
         } else {
             this.imagePullPolicy = "IfNotPresent";
         }
+        return self();
+    }
+
+    public T withKubernetesClient(KubernetesClient kubernetesClient) {
+        this.kubernetesClient = kubernetesClient;
         return self();
     }
 
@@ -375,7 +389,8 @@ public abstract class GenericPod<T extends GenericPod<T>> extends JdbcDatabaseCo
                     throw new StartPodException("port forward server error", podName, throwable);
                 }
             } else {
-                log.info("port forward local {}:{} to remote port {}, ", localAddress.getHostAddress(), localPort, port);
+                log.info("port forward local {}:{} to remote {}.{}:{}, ", localAddress.getHostAddress(), localPort,
+                        podName, podContainerName, port);
             }
             return localPortForward;
         }));
