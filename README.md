@@ -17,6 +17,6 @@ Goal is Postgresql and Redis support.
     ```
 - start experimenting.
 
-See tests as an example [here](./src/test/java/com/github/m4gshm/testcontainers).
+See tests as an example [here](./tests/src/test/java/com/github/m4gshm/testcontainers).
 
 And don't forget to install [Minikube](https://kubernetes.io/ru/docs/tasks/tools/install-minikube/).
