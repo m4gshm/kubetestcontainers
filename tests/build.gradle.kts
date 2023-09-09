@@ -12,9 +12,10 @@ dependencies {
     testImplementation("org.projectlombok:lombok:1.18.28")
     testAnnotationProcessor("org.projectlombok:lombok:1.18.28")
 
-//    testImplementation("com.github.m4gshm:kubetestcontainers:1.0-SNAPSHOT")
+//    testImplementation("com.github.m4gshm:kubetestcontainers:0.1-SNAPSHOT")
     testImplementation(project(":"))
     testImplementation("org.testcontainers:postgresql:1.19.0")
+    testImplementation("org.testcontainers:mongodb:1.19.0")
 
     testImplementation(platform("org.junit:junit-bom:5.9.1"))
     testImplementation("org.junit.jupiter:junit-jupiter")

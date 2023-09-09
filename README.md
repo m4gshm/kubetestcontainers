@@ -11,7 +11,7 @@ Goal is Postgresql and Redis support.
         mavenLocal()
     }
     dependencies {
-        testImplementation("com.github.m4gshm:kubetestcontainers:1.0-SNAPSHOT")
+        testImplementation("com.github.m4gshm:kubetestcontainers:0.1-SNAPSHOT")
         testImplementation("org.testcontainers:postgresql:1.19.0")
     }
     ```

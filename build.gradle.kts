@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "com.github.m4gshm"
-version = "1.0-SNAPSHOT"
+version = "0.1-SNAPSHOT"
 
 repositories {
     mavenCentral()
@@ -18,6 +18,7 @@ dependencies {
     implementation("org.testcontainers:testcontainers:1.19.0")
     compileOnly("org.testcontainers:jdbc:1.19.0")
     compileOnly("org.testcontainers:postgresql:1.19.0")
+    compileOnly("org.testcontainers:mongodb:1.19.0")
 
     implementation("io.fabric8:kubernetes-client:6.8.1")
     implementation("commons-codec:commons-codec:1.16.0")
@@ -27,19 +28,6 @@ dependencies {
 
     testImplementation(platform("org.junit:junit-bom:5.9.1"))
     testImplementation("org.junit.jupiter:junit-jupiter")
-
-    testImplementation("org.testcontainers:testcontainers:1.19.0")
-    testImplementation("org.testcontainers:jdbc:1.19.0")
-    testImplementation("org.testcontainers:postgresql:1.19.0")
-
-    testImplementation("org.springframework.boot:spring-boot-test:3.1.3")
-    testImplementation("org.springframework.boot:spring-boot-starter-data-jpa:3.1.3")
-    testImplementation("org.springframework.boot:spring-boot-autoconfigure:3.1.3")
-    testImplementation("org.springframework:spring-test:6.0.11")
-    testImplementation("org.springframework:spring-orm:6.0.11")
-    testImplementation("org.postgresql:postgresql:42.6.0")
-
-    testImplementation("jakarta.persistence:jakarta.persistence-api:3.1.0")
 }
 
 tasks.test {

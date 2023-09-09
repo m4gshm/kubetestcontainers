@@ -15,20 +15,28 @@ import io.fabric8.kubernetes.api.model.SecurityContextBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClientBuilder;
 import io.fabric8.kubernetes.client.LocalPortForward;
+import io.fabric8.kubernetes.client.dsl.ExecWatch;
 import io.fabric8.kubernetes.client.dsl.PodResource;
+import io.fabric8.kubernetes.client.dsl.internal.uploadable.PodUpload;
 import lombok.Getter;
 import lombok.NonNull;
 import lombok.Setter;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.testcontainers.containers.Container;
+import org.testcontainers.containers.ExecInContainerPattern;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.output.OutputFrame;
 import org.testcontainers.containers.wait.strategy.WaitStrategy;
 import org.testcontainers.images.ImagePullPolicy;
 import org.testcontainers.images.PullPolicy;
+import org.testcontainers.images.builder.Transferable;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.Charset;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -307,6 +315,24 @@ public class PodEngine<T extends Container<T>> {
             }
         }
     }
+
+    public void copyFileToContainer(Transferable transferable, String containerPath) {
+        podResource.file(containerPath).upload(new ByteArrayInputStream(transferable.getBytes()));
+    }
+
+    @SneakyThrows
+    public Container.ExecResult execInContainer(Charset outputCharset, String... command)
+            throws UnsupportedOperationException, IOException, InterruptedException {
+
+//        this.container.execInContainer().getExitCode()
+
+//        var execWatch = podResource.exec(command);
+
+
+        Container.ExecResult execResult = Container.ExecResult.class.getConstructor().newInstance();
+        return execResult;
+    }
+
 
     protected void waitUntilPodStarted() {
         var startTime = System.currentTimeMillis();
