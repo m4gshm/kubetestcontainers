@@ -15,16 +15,15 @@ import io.fabric8.kubernetes.api.model.SecurityContextBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClientBuilder;
 import io.fabric8.kubernetes.client.LocalPortForward;
-import io.fabric8.kubernetes.client.dsl.ExecWatch;
 import io.fabric8.kubernetes.client.dsl.PodResource;
-import io.fabric8.kubernetes.client.dsl.internal.uploadable.PodUpload;
 import lombok.Getter;
 import lombok.NonNull;
 import lombok.Setter;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
+import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import org.testcontainers.containers.Container;
-import org.testcontainers.containers.ExecInContainerPattern;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.output.OutputFrame;
 import org.testcontainers.containers.wait.strategy.WaitStrategy;
@@ -33,10 +32,9 @@ import org.testcontainers.images.PullPolicy;
 import org.testcontainers.images.builder.Transferable;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.charset.Charset;
-import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -48,6 +46,8 @@ import static java.time.Duration.ofSeconds;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toMap;
 import static lombok.AccessLevel.PROTECTED;
+import static org.apache.commons.compress.archivers.tar.TarArchiveOutputStream.BIGNUMBER_POSIX;
+import static org.apache.commons.compress.archivers.tar.TarArchiveOutputStream.LONGFILE_POSIX;
 
 @Slf4j
 public class PodEngine<T extends Container<T>> {
@@ -72,9 +72,8 @@ public class PodEngine<T extends Container<T>> {
     protected Duration startupTimeout = ofSeconds(60);
     @Getter
     protected String portProtocol = "TCP";
-    @Getter(PROTECTED)
     private PodResource podResource;
-    private Map<Integer, LocalPortForward> localPortForwards;
+    private Map<Integer, LocalPortForward> localPortForwards = Map.of();
     @Getter
     private String imagePullSecretName;
     @Getter
@@ -108,8 +107,7 @@ public class PodEngine<T extends Container<T>> {
     }
 
     public String toStringFields() {
-        return "" +
-                ", dockerImageName='" + dockerImageName + '\'' +
+        return ", dockerImageName='" + dockerImageName + '\'' +
                 ", runAsNonRoot=" + runAsNonRoot +
                 ", runAsUser=" + runAsUser +
                 ", fsGroup=" + fsGroup +
@@ -117,7 +115,7 @@ public class PodEngine<T extends Container<T>> {
                 ", imagePullPolicy='" + imagePullPolicy + '\'' +
                 ", startupTimeout=" + startupTimeout +
                 ", portProtocol='" + portProtocol + '\'' +
-                ", podResource=" + podResource +
+                ", podResource=" + getPodResource() +
                 ", localPortForwards=" + localPortForwards +
                 ", imagePullSecretName='" + imagePullSecretName + '\'' +
                 ", podBuilderCustomizer=" + podBuilderCustomizer +
@@ -130,7 +128,6 @@ public class PodEngine<T extends Container<T>> {
     public DockerClient getDockerClient() {
         throw new UnsupportedOperationException("getDockerClient");
     }
-
 
     public T withImagePullPolicy(ImagePullPolicy imagePullPolicy) {
         if (imagePullPolicy == null) {
@@ -205,17 +202,17 @@ public class PodEngine<T extends Container<T>> {
     }
 
     public boolean isRunning() {
-        var podResource = this.podResource;
+        var podResource = this.getPodResource();
         return podResource != null && RUNNING.equals(podResource.get().getStatus().getPhase());
     }
 
     public boolean isHealthy() {
-        var podResource = this.podResource;
+        var podResource = this.getPodResource();
         return podResource != null && Set.of(PENDING, RUNNING).contains(podResource.get().getStatus().getPhase());
     }
 
     public boolean isCreated() {
-        var podResource = this.podResource;
+        var podResource = this.getPodResource();
         return podResource != null && !UNKNOWN.equals(podResource.get().getStatus().getPhase());
     }
 
@@ -224,7 +221,7 @@ public class PodEngine<T extends Container<T>> {
     }
 
     public String getContainerId() {
-        return podName;
+        return getContainerName();
     }
 
     public InspectContainerResponse getContainerInfo() {
@@ -240,7 +237,7 @@ public class PodEngine<T extends Container<T>> {
     }
 
     public String getLogs() {
-        return podResource.getLog();
+        return getPodResource().getLog();
     }
 
     public String getLogs(OutputFrame.OutputType... types) {
@@ -254,11 +251,9 @@ public class PodEngine<T extends Container<T>> {
 
     public void start() {
         configure();
-        var podName = podNameGenerator.generatePodName();
-        this.podName = podName;
         var podBuilder = new PodBuilder()
                 .withMetadata(new ObjectMetaBuilder()
-                        .withName(podName)
+                        .withName(podName = podNameGenerator.generatePodName())
                         .build())
                 .withSpec(new PodSpecBuilder()
                         .withSecurityContext(new PodSecurityContextBuilder()
@@ -309,34 +304,62 @@ public class PodEngine<T extends Container<T>> {
             }
         }
         if (deletePodOnStop) {
-            var podResource = this.podResource;
+            var podResource = this.getPodResource();
             if (podResource != null) {
                 podResource.delete();
             }
         }
     }
 
+    @SneakyThrows
     public void copyFileToContainer(Transferable transferable, String containerPath) {
-        podResource.file(containerPath).upload(new ByteArrayInputStream(transferable.getBytes()));
+        if (getContainerId() == null) {
+            throw new IllegalStateException("copyFileToContainer can only be used with created / running container");
+        }
+        var payload = new ByteArrayOutputStream();
+        try (var tar = new TarArchiveOutputStream(payload)) {
+            tar.setLongFileMode(LONGFILE_POSIX);
+            tar.setBigNumberMode(BIGNUMBER_POSIX);
+            transferable.transferTo(tar, containerPath);
+        }
+        try (var tar = new TarArchiveInputStream(new ByteArrayInputStream(payload.toByteArray()))) {
+            for (var entry = tar.getNextTarEntry(); entry != null; entry = tar.getNextTarEntry()) {
+                podResource.file(containerPath).upload(tar);
+            }
+        }
     }
 
     @SneakyThrows
-    public Container.ExecResult execInContainer(Charset outputCharset, String... command)
-            throws UnsupportedOperationException, IOException, InterruptedException {
+    public Container.ExecResult execInContainer(Charset outputCharset, String... command) {
+        var hasShellCall = command.length > 1 && command[0].equals("sh") && command[1].equals("-c");
+        if (!hasShellCall) {
+            var newCmd = new String[command.length + 2];
+            newCmd[0] = "sh";
+            newCmd[1] = "-c";
+            System.arraycopy(command, 0, newCmd, 2, command.length);
+            command = newCmd;
+        }
 
-//        this.container.execInContainer().getExitCode()
 
-//        var execWatch = podResource.exec(command);
+        try (var execWatch = podResource.redirectingOutput().redirectingError().exec(command)) {
+            var exited = execWatch.exitCode();
+            var exitCode = exited.get();
+            var watchError = execWatch.getError();
+            var errOut = new String(watchError.readAllBytes(), outputCharset);
+            var watchOutput = execWatch.getOutput();
+            var output = new String(watchOutput.readAllBytes(), outputCharset);
 
+            var constructor = Container.ExecResult.class.getDeclaredConstructor(int.class, String.class, String.class);
+            constructor.setAccessible(true);
 
-        Container.ExecResult execResult = Container.ExecResult.class.getConstructor().newInstance();
-        return execResult;
+            return constructor.newInstance(exitCode, output, errOut);
+        }
     }
 
 
     protected void waitUntilPodStarted() {
         var startTime = System.currentTimeMillis();
-        var pod = podResource.get();
+        var pod = getPodResource().get();
         var status = pod.getStatus();
 
         while (PENDING.equals(status.getPhase())) {
@@ -364,15 +387,15 @@ public class PodEngine<T extends Container<T>> {
             try {
                 Thread.sleep(100);
             } catch (InterruptedException e) {
-                podResource.delete();
+                getPodResource().delete();
                 throw new StartPodException("interrupted", podName, phase, e);
             }
-            status = podResource.get().getStatus();
+            status = getPodResource().get().getStatus();
         }
 
         try {
             if (!RUNNING.equals(status.getPhase())) {
-                podResource.delete();
+                getPodResource().delete();
                 throw new StartPodException("unexpected pod status", pod.getMetadata().getName(), status.getPhase());
             }
 
@@ -429,7 +452,7 @@ public class PodEngine<T extends Container<T>> {
     protected void startPortForward() {
         var exposedPorts = container.getExposedPorts();
         localPortForwards = exposedPorts.stream().collect(toMap(port -> port, port -> {
-            var localPortForward = podResource.portForward(port);
+            var localPortForward = getPodResource().portForward(port);
             var localAddress = localPortForward.getLocalAddress();
             var localPort = localPortForward.getLocalPort();
             if (localPortForward.errorOccurred()) {
@@ -459,4 +482,10 @@ public class PodEngine<T extends Container<T>> {
         return requireNonNull(getLocalPortForwards().get(originalPort), "Requested port (" + originalPort + ") is not mapped");
     }
 
+    protected PodResource getPodResource() {
+        if (podResource == null) {
+            start();
+        }
+        return podResource;
+    }
 }
