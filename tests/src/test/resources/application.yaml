@@ -1,5 +1,9 @@
 spring.jpa.hibernate.ddl-auto: update
 spring.jpa.database-platform: org.hibernate.dialect.PostgreSQLDialect
-logging.level.com.github.m4gshm.testcontainers: TRACE
-#logging.level.root: TRACE
-#logging.level.io.fabric8.kubernetes: TRACE
+logging:
+  level:
+#    root: TRACE
+    com.github.m4gshm.testcontainers: TRACE
+    org.springframework.data.redis: TRACE
+    org.springframework.cache: trace
+#    io.fabric8.kubernetes: TRACE
