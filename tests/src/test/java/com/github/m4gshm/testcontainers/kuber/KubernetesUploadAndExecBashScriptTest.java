@@ -15,8 +15,11 @@ public class KubernetesUploadAndExecBashScriptTest {
         try (var container = new GenericPod<>("alpine:3.18.3").withCommand("sleep 2m").withDeletePodOnStop(false)) {
             container.start();
             container.copyFileToContainer(MountableFile.forClasspathResource("/test_script.sh", 777), "/entry.sh");
-            var execResult = container.execInContainer("chmod 777 /entry.sh && /entry.sh");
+            var execResult = container.execInContainer("/entry.sh");
 
+            var exitCode = execResult.getExitCode();
+            assertEquals(0, exitCode, "exitCode: " + exitCode +
+                    ", err: " + execResult.getStderr().replace("\r", " "));
             var stdout = execResult.getStdout();
             var result = stdout.trim();
             assertEquals("test output", result);

@@ -2,16 +2,7 @@ package com.github.m4gshm.testcontainers;
 
 import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.command.InspectContainerResponse;
-import io.fabric8.kubernetes.api.model.ContainerBuilder;
-import io.fabric8.kubernetes.api.model.ContainerPort;
-import io.fabric8.kubernetes.api.model.ContainerPortBuilder;
-import io.fabric8.kubernetes.api.model.EnvVarBuilder;
-import io.fabric8.kubernetes.api.model.LocalObjectReferenceBuilder;
-import io.fabric8.kubernetes.api.model.ObjectMetaBuilder;
-import io.fabric8.kubernetes.api.model.PodBuilder;
-import io.fabric8.kubernetes.api.model.PodSecurityContextBuilder;
-import io.fabric8.kubernetes.api.model.PodSpecBuilder;
-import io.fabric8.kubernetes.api.model.SecurityContextBuilder;
+import io.fabric8.kubernetes.api.model.*;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClientBuilder;
 import io.fabric8.kubernetes.client.LocalPortForward;
@@ -21,7 +12,6 @@ import lombok.NonNull;
 import lombok.Setter;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import org.testcontainers.containers.Container;
 import org.testcontainers.containers.GenericContainer;
@@ -34,6 +24,7 @@ import org.testcontainers.images.builder.Transferable;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.Charset;
 import java.time.Duration;
 import java.util.List;
@@ -41,9 +32,12 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.UnaryOperator;
 
+import static io.fabric8.kubernetes.client.dsl.internal.core.v1.PodOperationsImpl.shellQuote;
 import static java.lang.Boolean.TRUE;
+import static java.lang.String.format;
 import static java.time.Duration.ofSeconds;
 import static java.util.Objects.requireNonNull;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.stream.Collectors.toMap;
 import static lombok.AccessLevel.PROTECTED;
 import static org.apache.commons.compress.archivers.tar.TarArchiveOutputStream.BIGNUMBER_POSIX;
@@ -71,8 +65,11 @@ public class PodEngine<T extends Container<T>> {
     @Getter
     protected Duration startupTimeout = ofSeconds(60);
     @Getter
+    @Setter
+    protected Duration uploadFileTimeout = ofSeconds(60);
+    @Getter
     protected String portProtocol = "TCP";
-    private PodResource podResource;
+    private PodResource pod;
     private Map<Integer, LocalPortForward> localPortForwards = Map.of();
     @Getter
     private String imagePullSecretName;
@@ -115,7 +112,7 @@ public class PodEngine<T extends Container<T>> {
                 ", imagePullPolicy='" + imagePullPolicy + '\'' +
                 ", startupTimeout=" + startupTimeout +
                 ", portProtocol='" + portProtocol + '\'' +
-                ", podResource=" + getPodResource() +
+                ", podResource=" + getPod() +
                 ", localPortForwards=" + localPortForwards +
                 ", imagePullSecretName='" + imagePullSecretName + '\'' +
                 ", podBuilderCustomizer=" + podBuilderCustomizer +
@@ -202,17 +199,17 @@ public class PodEngine<T extends Container<T>> {
     }
 
     public boolean isRunning() {
-        var podResource = this.getPodResource();
+        var podResource = this.getPod();
         return podResource != null && RUNNING.equals(podResource.get().getStatus().getPhase());
     }
 
     public boolean isHealthy() {
-        var podResource = this.getPodResource();
+        var podResource = this.getPod();
         return podResource != null && Set.of(PENDING, RUNNING).contains(podResource.get().getStatus().getPhase());
     }
 
     public boolean isCreated() {
-        var podResource = this.getPodResource();
+        var podResource = this.getPod();
         return podResource != null && !UNKNOWN.equals(podResource.get().getStatus().getPhase());
     }
 
@@ -237,7 +234,7 @@ public class PodEngine<T extends Container<T>> {
     }
 
     public String getLogs() {
-        return getPodResource().getLog();
+        return getPod().getLog();
     }
 
     public String getLogs(OutputFrame.OutputType... types) {
@@ -287,7 +284,7 @@ public class PodEngine<T extends Container<T>> {
         var kubernetesClient = this.kubernetesClient;
 
         var pod = kubernetesClient.resource(podBuilder.build()).create();
-        podResource = kubernetesClient.pods().resource(pod);
+        this.pod = kubernetesClient.pods().resource(pod);
 
         waitUntilPodStarted();
         startPortForward();
@@ -304,7 +301,7 @@ public class PodEngine<T extends Container<T>> {
             }
         }
         if (deletePodOnStop) {
-            var podResource = this.getPodResource();
+            var podResource = this.getPod();
             if (podResource != null) {
                 podResource.delete();
             }
@@ -322,10 +319,43 @@ public class PodEngine<T extends Container<T>> {
             tar.setBigNumberMode(BIGNUMBER_POSIX);
             transferable.transferTo(tar, containerPath);
         }
-        try (var tar = new TarArchiveInputStream(new ByteArrayInputStream(payload.toByteArray()))) {
-            for (var entry = tar.getNextTarEntry(); entry != null; entry = tar.getNextTarEntry()) {
-                podResource.file(containerPath).upload(tar);
+
+        uploadTmpTar(new ByteArrayInputStream(payload.toByteArray()));
+    }
+
+    @SneakyThrows
+    public void uploadTmpTar(InputStream tar) {
+        var tarName = "/tmp/testcontainer-" + this.podName + ".tar";
+        var tarUploaded = pod.file(tarName).upload(tar);
+        if (!tarUploaded) {
+            removeFile(tarName);
+        } else {
+            var unpackDir = "/";
+            var extractTarCmd = format("mkdir -p %1$s; tar -C %1$s -xmf %2$s; e=$?; rm %2$s; exit $e",
+                    shellQuote(unpackDir), tarName);
+            try (var exec = pod.redirectingInput().exec("sh", "-c", extractTarCmd)) {
+                var exitedCode = exec.exitCode();
+                var exitCode = exitedCode.get();
+                var unpacked = exitCode == 0;
+                if (!unpacked) {
+                    throw new UploadFileException("unpack temporary tar " + tarName +
+                            ", exit code " + exitedCode +
+                            ", errOut '" + new String(exec.getError().readAllBytes()) + "'");
+                }
             }
+        }
+    }
+
+    @SneakyThrows
+    public boolean removeFile(String tarName) {
+        try (var exec = pod.redirectingError().exec("rm", tarName)) {
+            var exitCode = exec.exitCode().get(uploadFileTimeout.toMillis(), MILLISECONDS);
+            var deleted = exitCode != 0;
+            if (deleted) {
+                log.warn("deleting of temporary file {} finished with unexpected code {}, errOut: {}",
+                        tarName, exitCode, new String(exec.getError().readAllBytes()));
+            }
+            return deleted;
         }
     }
 
@@ -341,7 +371,7 @@ public class PodEngine<T extends Container<T>> {
         }
 
 
-        try (var execWatch = podResource.redirectingOutput().redirectingError().exec(command)) {
+        try (var execWatch = pod.redirectingOutput().redirectingError().exec(command)) {
             var exited = execWatch.exitCode();
             var exitCode = exited.get();
             var watchError = execWatch.getError();
@@ -359,7 +389,7 @@ public class PodEngine<T extends Container<T>> {
 
     protected void waitUntilPodStarted() {
         var startTime = System.currentTimeMillis();
-        var pod = getPodResource().get();
+        var pod = getPod().get();
         var status = pod.getStatus();
 
         while (PENDING.equals(status.getPhase())) {
@@ -387,15 +417,15 @@ public class PodEngine<T extends Container<T>> {
             try {
                 Thread.sleep(100);
             } catch (InterruptedException e) {
-                getPodResource().delete();
+                getPod().delete();
                 throw new StartPodException("interrupted", podName, phase, e);
             }
-            status = getPodResource().get().getStatus();
+            status = getPod().get().getStatus();
         }
 
         try {
             if (!RUNNING.equals(status.getPhase())) {
-                getPodResource().delete();
+                getPod().delete();
                 throw new StartPodException("unexpected pod status", pod.getMetadata().getName(), status.getPhase());
             }
 
@@ -452,7 +482,7 @@ public class PodEngine<T extends Container<T>> {
     protected void startPortForward() {
         var exposedPorts = container.getExposedPorts();
         localPortForwards = exposedPorts.stream().collect(toMap(port -> port, port -> {
-            var localPortForward = getPodResource().portForward(port);
+            var localPortForward = getPod().portForward(port);
             var localAddress = localPortForward.getLocalAddress();
             var localPort = localPortForward.getLocalPort();
             if (localPortForward.errorOccurred()) {
@@ -482,10 +512,10 @@ public class PodEngine<T extends Container<T>> {
         return requireNonNull(getLocalPortForwards().get(originalPort), "Requested port (" + originalPort + ") is not mapped");
     }
 
-    protected PodResource getPodResource() {
-        if (podResource == null) {
+    protected PodResource getPod() {
+        if (pod == null) {
             start();
         }
-        return podResource;
+        return pod;
     }
 }

@@ -2,7 +2,6 @@ package com.github.m4gshm.testcontainers.docker;
 
 import lombok.SneakyThrows;
 import org.junit.jupiter.api.Test;
-import org.testcontainers.containers.Container;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.utility.MountableFile;
 
@@ -18,6 +17,9 @@ public class DockerUploadAndExecBashScriptTest {
             container.copyFileToContainer(MountableFile.forClasspathResource("/test_script.sh", 777), "/entry.sh");
             var execResult = container.execInContainer("/entry.sh");
 
+            var exitCode = execResult.getExitCode();
+            assertEquals(0, exitCode, "exitCode: " + exitCode +
+                    ", err: " + execResult.getStderr().replace("\r", " "));
             var stdout = execResult.getStdout();
             var result = stdout.trim();
             assertEquals("test output", result);
