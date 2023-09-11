@@ -2,7 +2,16 @@ package com.github.m4gshm.testcontainers;
 
 import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.command.InspectContainerResponse;
-import io.fabric8.kubernetes.api.model.*;
+import io.fabric8.kubernetes.api.model.ContainerBuilder;
+import io.fabric8.kubernetes.api.model.ContainerPort;
+import io.fabric8.kubernetes.api.model.ContainerPortBuilder;
+import io.fabric8.kubernetes.api.model.EnvVarBuilder;
+import io.fabric8.kubernetes.api.model.LocalObjectReferenceBuilder;
+import io.fabric8.kubernetes.api.model.ObjectMetaBuilder;
+import io.fabric8.kubernetes.api.model.PodBuilder;
+import io.fabric8.kubernetes.api.model.PodSecurityContextBuilder;
+import io.fabric8.kubernetes.api.model.PodSpecBuilder;
+import io.fabric8.kubernetes.api.model.SecurityContextBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClientBuilder;
 import io.fabric8.kubernetes.client.LocalPortForward;
@@ -20,13 +29,17 @@ import org.testcontainers.containers.wait.strategy.WaitStrategy;
 import org.testcontainers.images.ImagePullPolicy;
 import org.testcontainers.images.PullPolicy;
 import org.testcontainers.images.builder.Transferable;
+import org.testcontainers.utility.MountableFile;
+import org.testcontainers.utility.ThrowingFunction;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.InetAddress;
 import java.nio.charset.Charset;
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -37,7 +50,6 @@ import static java.lang.Boolean.TRUE;
 import static java.lang.String.format;
 import static java.time.Duration.ofSeconds;
 import static java.util.Objects.requireNonNull;
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.stream.Collectors.toMap;
 import static lombok.AccessLevel.PROTECTED;
 import static org.apache.commons.compress.archivers.tar.TarArchiveOutputStream.BIGNUMBER_POSIX;
@@ -65,9 +77,6 @@ public class PodEngine<T extends Container<T>> {
     @Getter
     protected Duration startupTimeout = ofSeconds(60);
     @Getter
-    @Setter
-    protected Duration uploadFileTimeout = ofSeconds(60);
-    @Getter
     protected String portProtocol = "TCP";
     private PodResource pod;
     private Map<Integer, LocalPortForward> localPortForwards = Map.of();
@@ -81,6 +90,8 @@ public class PodEngine<T extends Container<T>> {
     private boolean deletePodOnStop = true;
     @Getter(PROTECTED)
     private boolean started;
+    private Map<Transferable, String> copyToTransferableContainerPathMap = new HashMap<>();
+    private InetAddress localPortForwardHost;
 
     public PodEngine(@NonNull T container) {
         this(container, null);
@@ -177,6 +188,11 @@ public class PodEngine<T extends Container<T>> {
         return container;
     }
 
+    public T withLocalPortForwardHost(InetAddress localPortForwardHost) {
+        this.localPortForwardHost = localPortForwardHost;
+        return container;
+    }
+
     public T waitingFor(@NonNull WaitStrategy waitStrategy) {
         if (waitStrategy instanceof PodEngineAware podEngineAware) {
             podEngineAware.setPod(this);
@@ -195,6 +211,15 @@ public class PodEngine<T extends Container<T>> {
 
     public T withDeletePodOnStop(boolean deletePodOnStop) {
         this.deletePodOnStop = deletePodOnStop;
+        return container;
+    }
+
+    public T withCopyFileToContainer(MountableFile mountableFile, String containerPath) {
+        return withCopyToContainer(mountableFile, containerPath);
+    }
+
+    public T withCopyToContainer(Transferable transferable, String containerPath) {
+        copyToTransferableContainerPathMap.put(transferable, containerPath);
         return container;
     }
 
@@ -290,6 +315,8 @@ public class PodEngine<T extends Container<T>> {
         startPortForward();
         waitUntilContainerStarted();
         this.started = true;
+
+        copyToTransferableContainerPathMap.forEach(this::copyFileToContainer);
     }
 
     public void stop() {
@@ -310,9 +337,7 @@ public class PodEngine<T extends Container<T>> {
 
     @SneakyThrows
     public void copyFileToContainer(Transferable transferable, String containerPath) {
-        if (getContainerId() == null) {
-            throw new IllegalStateException("copyFileToContainer can only be used with created / running container");
-        }
+        assertPodRunning("copyFileToContainer");
         var payload = new ByteArrayOutputStream();
         try (var tar = new TarArchiveOutputStream(payload)) {
             tar.setLongFileMode(LONGFILE_POSIX);
@@ -321,6 +346,14 @@ public class PodEngine<T extends Container<T>> {
         }
 
         uploadTmpTar(new ByteArrayInputStream(payload.toByteArray()));
+    }
+
+    @SneakyThrows
+    public <T> T copyFileFromContainer(String containerPath, ThrowingFunction<InputStream, T> function) {
+        assertPodRunning("copyFileFromContainer");
+        try (var inputStream = pod.file(containerPath).read()) {
+            return function.apply(inputStream);
+        }
     }
 
     @SneakyThrows
@@ -349,7 +382,7 @@ public class PodEngine<T extends Container<T>> {
     @SneakyThrows
     public boolean removeFile(String tarName) {
         try (var exec = pod.redirectingError().exec("rm", tarName)) {
-            var exitCode = exec.exitCode().get(uploadFileTimeout.toMillis(), MILLISECONDS);
+            var exitCode = exec.exitCode().get();
             var deleted = exitCode != 0;
             if (deleted) {
                 log.warn("deleting of temporary file {} finished with unexpected code {}, errOut: {}",
@@ -482,7 +515,10 @@ public class PodEngine<T extends Container<T>> {
     protected void startPortForward() {
         var exposedPorts = container.getExposedPorts();
         localPortForwards = exposedPorts.stream().collect(toMap(port -> port, port -> {
-            var localPortForward = getPod().portForward(port);
+            var pod = getPod();
+            var localPortForward = localPortForwardHost != null
+                    ? pod.portForward(port, localPortForwardHost, 0)
+                    : pod.portForward(port);
             var localAddress = localPortForward.getLocalAddress();
             var localPort = localPortForward.getLocalPort();
             if (localPortForward.errorOccurred()) {
@@ -518,4 +554,11 @@ public class PodEngine<T extends Container<T>> {
         }
         return pod;
     }
+
+    private void assertPodRunning(String funcName) {
+        if (getContainerId() == null) {
+            throw new IllegalStateException(funcName + " can only be used with running pod");
+        }
+    }
+
 }
