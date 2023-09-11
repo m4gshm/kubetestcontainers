@@ -10,7 +10,7 @@ import org.testcontainers.containers.JdbcDatabaseContainer;
 import static java.util.Objects.requireNonNull;
 
 @Slf4j
-public class JdbcDatabasePod<T extends JdbcDatabasePod<T>> extends JdbcDatabaseContainer<T> {
+public class JdbcDatabasePod<T extends JdbcDatabasePod<T>> extends JdbcDatabaseContainer<T> implements PodAware {
 
     private PodEngine<T> podEngine;
     @Getter
@@ -39,7 +39,7 @@ public class JdbcDatabasePod<T extends JdbcDatabasePod<T>> extends JdbcDatabaseC
     }
 
     @Delegate(excludes = Excludes.class)
-    public PodEngine<T> getPodEngine() {
+    public PodEngine<T> getPod() {
         initPodEngine();
         return podEngine;
     }
@@ -52,7 +52,7 @@ public class JdbcDatabasePod<T extends JdbcDatabasePod<T>> extends JdbcDatabaseC
 
     @Override
     public void start() {
-        getPodEngine().start();
+        getPod().start();
         runInitScriptIfRequired();
     }
 

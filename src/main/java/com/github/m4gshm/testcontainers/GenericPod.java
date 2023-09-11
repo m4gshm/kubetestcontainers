@@ -9,7 +9,7 @@ import org.testcontainers.containers.GenericContainer;
 import static java.util.Objects.requireNonNull;
 
 @Slf4j
-public class GenericPod<T extends GenericPod<T>> extends GenericContainer<T> {
+public class GenericPod<T extends GenericPod<T>> extends GenericContainer<T> implements PodAware {
 
     private PodEngine<T> podEngine;
 
@@ -17,11 +17,12 @@ public class GenericPod<T extends GenericPod<T>> extends GenericContainer<T> {
         super(dockerImageName);
         var podEngine = this.podEngine;
         requireNonNull(podEngine, "podEngine is null");
-        waitStrategy = new PodPortWaitStrategy(podEngine, this);
+        waitStrategy = new PodPortWaitStrategy();
     }
 
     @Delegate
-    public PodEngine<T> getPodEngine() {
+    @Override
+    public PodEngine<T> getPod() {
         initPodEngine();
         return podEngine;
     }

@@ -7,6 +7,7 @@ import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
+import org.springframework.data.mongodb.core.mapping.Document;
 import org.springframework.data.redis.core.RedisHash;
 
 @Entity
@@ -16,6 +17,7 @@ import org.springframework.data.redis.core.RedisHash;
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
+@Document
 public class UserEntity {
     @Id
     @org.springframework.data.annotation.Id

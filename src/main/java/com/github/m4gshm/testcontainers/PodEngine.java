@@ -1,7 +1,10 @@
 package com.github.m4gshm.testcontainers;
 
 import com.github.dockerjava.api.DockerClient;
+import com.github.dockerjava.api.command.CreateContainerCmd;
 import com.github.dockerjava.api.command.InspectContainerResponse;
+import com.github.m4gshm.testcontainers.wait.PodLogMessageWaitStrategy;
+import com.github.m4gshm.testcontainers.wait.PodPortWaitStrategy;
 import io.fabric8.kubernetes.api.model.ContainerBuilder;
 import io.fabric8.kubernetes.api.model.ContainerPort;
 import io.fabric8.kubernetes.api.model.ContainerPortBuilder;
@@ -22,9 +25,12 @@ import lombok.Setter;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
+import org.jetbrains.annotations.NotNull;
 import org.testcontainers.containers.Container;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.output.OutputFrame;
+import org.testcontainers.containers.wait.strategy.HostPortWaitStrategy;
+import org.testcontainers.containers.wait.strategy.LogMessageWaitStrategy;
 import org.testcontainers.containers.wait.strategy.WaitStrategy;
 import org.testcontainers.images.ImagePullPolicy;
 import org.testcontainers.images.PullPolicy;
@@ -36,6 +42,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.nio.charset.Charset;
 import java.time.Duration;
@@ -43,11 +50,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
 
 import static io.fabric8.kubernetes.client.dsl.internal.core.v1.PodOperationsImpl.shellQuote;
 import static java.lang.Boolean.TRUE;
 import static java.lang.String.format;
+import static java.lang.reflect.Proxy.newProxyInstance;
 import static java.time.Duration.ofSeconds;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toMap;
@@ -92,6 +101,7 @@ public class PodEngine<T extends Container<T>> {
     private boolean started;
     private Map<Transferable, String> copyToTransferableContainerPathMap = new HashMap<>();
     private InetAddress localPortForwardHost;
+    private List<String> entryPoint;
 
     public PodEngine(@NonNull T container) {
         this(container, null);
@@ -107,6 +117,21 @@ public class PodEngine<T extends Container<T>> {
         this.kubernetesClient = kubernetesClient;
         this.podNameGenerator = podNameGenerator;
         this.dockerImageName = dockerImageName;
+    }
+
+    @SneakyThrows
+    private static <T> T getFieldValue(Object object, String fieldName) {
+        var regExField = object.getClass().getDeclaredField(fieldName);
+        regExField.setAccessible(true);
+        return (T) regExField.get(object);
+    }
+
+    private static WaitStrategy replacePodWaiters(@NotNull WaitStrategy waitStrategy) {
+        return waitStrategy instanceof LogMessageWaitStrategy
+                ? new PodLogMessageWaitStrategy(getFieldValue(waitStrategy, "regEx"))
+                : waitStrategy instanceof HostPortWaitStrategy
+                ? new PodPortWaitStrategy(getFieldValue(waitStrategy, "ports"))
+                : waitStrategy;
     }
 
     @Override
@@ -193,11 +218,10 @@ public class PodEngine<T extends Container<T>> {
         return container;
     }
 
+    @SneakyThrows
     public T waitingFor(@NonNull WaitStrategy waitStrategy) {
-        if (waitStrategy instanceof PodEngineAware podEngineAware) {
-            podEngineAware.setPod(this);
-        }
-        return container.waitingFor(waitStrategy);
+        setContainerField("waitStrategy", replacePodWaiters(waitStrategy));
+        return container;
     }
 
     public T withPrivilegedMode(boolean privilegedMode) {
@@ -221,6 +245,34 @@ public class PodEngine<T extends Container<T>> {
     public T withCopyToContainer(Transferable transferable, String containerPath) {
         copyToTransferableContainerPathMap.put(transferable, containerPath);
         return container;
+    }
+
+    public T withCreateContainerCmdModifier(Consumer<CreateContainerCmd> modifier) {
+        var createContainerCmd = newCreateContainerCmd();
+        modifier.accept(createContainerCmd);
+        return container;
+    }
+
+    @NotNull
+    private CreateContainerCmd newCreateContainerCmd() {
+        var classLoader = getClass().getClassLoader();
+        return (CreateContainerCmd) newProxyInstance(classLoader, new Class[]{CreateContainerCmd.class}, (
+                proxy, method, args
+        ) -> {
+            var methodName = method.getName();
+            return switch (methodName) {
+                case "withEntrypoint" -> {
+                    var firstArg = args[0];
+                    if (firstArg instanceof String[] strings) {
+                        this.entryPoint = List.of(strings);
+                    } else if (firstArg instanceof List<?> list) {
+                        this.entryPoint = list.stream().map(String::valueOf).toList();
+                    }
+                    yield null;
+                }
+                default -> throw new UnsupportedOperationException(methodName);
+            };
+        });
     }
 
     public boolean isRunning() {
@@ -268,7 +320,11 @@ public class PodEngine<T extends Container<T>> {
 
     public String getHost() {
         return getLocalPortForwards().values().stream().findFirst()
-                .map(lp -> lp.getLocalAddress().getHostName()).orElse("localhost");
+                .map(LocalPortForward::getLocalAddress)
+                .map(localAddress -> localAddress instanceof Inet6Address
+                        ? "[" + localAddress.getHostName() + "]"
+                        : localAddress.getHostName())
+                .orElse("localhost");
     }
 
     public void start() {
@@ -296,6 +352,7 @@ public class PodEngine<T extends Container<T>> {
                                         .build())
                                 .withName(podContainerName)
                                 .withArgs(container.getCommandParts())
+                                .withCommand(entryPoint)
                                 .withPorts(buildContainerPorts())
                                 .withEnv(container.getEnvMap().entrySet().stream().map(e ->
                                         new EnvVarBuilder().withName(e.getKey()).withValue(e.getValue()).build()).toList())
@@ -309,7 +366,13 @@ public class PodEngine<T extends Container<T>> {
         var kubernetesClient = this.kubernetesClient;
 
         var pod = kubernetesClient.resource(podBuilder.build()).create();
+
         this.pod = kubernetesClient.pods().resource(pod);
+
+        var containerInfo = new InspectContainerResponse();
+
+        //todo fill response
+        containerIsStarting(containerInfo, false);
 
         waitUntilPodStarted();
         startPortForward();
@@ -317,6 +380,9 @@ public class PodEngine<T extends Container<T>> {
         this.started = true;
 
         copyToTransferableContainerPathMap.forEach(this::copyFileToContainer);
+
+        //todo fill response
+        containerIsStarted(containerInfo, false);
     }
 
     public void stop() {
@@ -495,13 +561,42 @@ public class PodEngine<T extends Container<T>> {
     }
 
     @SneakyThrows
+    protected void containerIsStarting(InspectContainerResponse containerInfo, boolean reused) {
+        var containerIsStarted = GenericContainer.class.getDeclaredMethod(
+                "containerIsStarting", InspectContainerResponse.class, boolean.class
+        );
+        containerIsStarted.setAccessible(true);
+        containerIsStarted.invoke(container, containerInfo, reused);
+    }
+
+    @SneakyThrows
+    protected void containerIsStarted(InspectContainerResponse containerInfo, boolean reused) {
+        var containerIsStarted = GenericContainer.class.getDeclaredMethod(
+                "containerIsStarted", InspectContainerResponse.class, boolean.class
+        );
+        containerIsStarted.setAccessible(true);
+        containerIsStarted.invoke(container, containerInfo, reused);
+    }
+
+    @SneakyThrows
     private void invokeContainerMethod(String name) {
         if (container instanceof GenericContainer<?>) {
             var method = GenericContainer.class.getDeclaredMethod(name);
             method.setAccessible(true);
             method.invoke(container);
         } else {
-            log.warn("no method {} in container {}", name, container.getClass());
+            throw new IllegalStateException("no method '" + name + "' in container " + container.getClass());
+        }
+    }
+
+    @SneakyThrows
+    private void setContainerField(String name, Object value) {
+        if (container instanceof GenericContainer<?>) {
+            var field = GenericContainer.class.getDeclaredField(name);
+            field.setAccessible(true);
+            field.set(container, value);
+        } else {
+            throw new IllegalStateException("no field '" + name + "' in container " + container.getClass());
         }
     }
 

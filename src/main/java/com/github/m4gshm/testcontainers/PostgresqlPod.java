@@ -27,7 +27,7 @@ public class PostgresqlPod<T extends PostgresqlPod<T>> extends JdbcDatabasePod<T
 
         waitStrategy = new PodLogMessageWaitStrategy()
                 .withRegEx(".*database system is ready to accept connections.*\\s")
-                .withStartupTimeout(getPodEngine().getStartupTimeout());
+                .withStartupTimeout(getPod().getStartupTimeout());
 
         setCommand("postgres", "-c", "fsync=off");
         setDriverClassName("org.postgresql.Driver");

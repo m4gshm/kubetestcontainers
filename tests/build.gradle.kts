@@ -22,6 +22,7 @@ dependencies {
 
     testImplementation("org.springframework.boot:spring-boot-test:3.1.3")
     testImplementation("org.springframework.boot:spring-boot-starter-data-jpa:3.1.3")
+    testImplementation("org.springframework.boot:spring-boot-starter-data-mongodb:3.1.3")
     testImplementation("org.springframework.boot:spring-boot-starter-data-redis:3.1.3")
     testImplementation("org.springframework.boot:spring-boot-autoconfigure:3.1.3")
     testImplementation("org.springframework:spring-test:6.0.11")

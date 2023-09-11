@@ -30,7 +30,7 @@ public abstract class AbstractUploadAndExecBashScriptTest {
     @SneakyThrows
     public <T> void uploadAndExecScript() {
         try (var container = newContainer()
-                .withCopyToContainer(forClasspathResource("/scripts/test_script.sh", 777), "/entry.sh")
+                .withCopyToContainer(forClasspathResource("/scripts/test_script.sh", 0777), "/entry.sh")
         ) {
             container.start();
             var execResult = container.execInContainer("/entry.sh");
