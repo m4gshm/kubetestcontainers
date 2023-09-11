@@ -4,8 +4,6 @@ import com.github.m4gshm.testcontainers.AbstractUploadAndExecBashScriptTest;
 import com.github.m4gshm.testcontainers.GenericPod;
 import org.testcontainers.containers.GenericContainer;
 
-import static java.net.InetAddress.getByName;
-
 public class KubernetesUploadAndExecBashScriptTest extends AbstractUploadAndExecBashScriptTest {
 
     protected GenericContainer<?> newContainer() {
