@@ -1,5 +1,6 @@
 package com.github.m4gshm.testcontainers;
 
+import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.command.CreateContainerCmd;
 import com.github.dockerjava.api.command.InspectContainerResponse;
@@ -11,6 +12,7 @@ import io.fabric8.kubernetes.api.model.ContainerPortBuilder;
 import io.fabric8.kubernetes.api.model.EnvVarBuilder;
 import io.fabric8.kubernetes.api.model.LocalObjectReferenceBuilder;
 import io.fabric8.kubernetes.api.model.ObjectMetaBuilder;
+import io.fabric8.kubernetes.api.model.Pod;
 import io.fabric8.kubernetes.api.model.PodBuilder;
 import io.fabric8.kubernetes.api.model.PodSecurityContextBuilder;
 import io.fabric8.kubernetes.api.model.PodSpecBuilder;
@@ -26,8 +28,10 @@ import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import org.jetbrains.annotations.NotNull;
+import org.testcontainers.containers.BindMode;
 import org.testcontainers.containers.Container;
 import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.SelinuxContext;
 import org.testcontainers.containers.output.OutputFrame;
 import org.testcontainers.containers.wait.strategy.HostPortWaitStrategy;
 import org.testcontainers.containers.wait.strategy.LogMessageWaitStrategy;
@@ -35,6 +39,7 @@ import org.testcontainers.containers.wait.strategy.WaitStrategy;
 import org.testcontainers.images.ImagePullPolicy;
 import org.testcontainers.images.PullPolicy;
 import org.testcontainers.images.builder.Transferable;
+import org.testcontainers.shaded.com.google.common.hash.Hashing;
 import org.testcontainers.utility.MountableFile;
 import org.testcontainers.utility.ThrowingFunction;
 
@@ -53,10 +58,13 @@ import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
 
+import static com.fasterxml.jackson.databind.MapperFeature.SORT_PROPERTIES_ALPHABETICALLY;
+import static com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS;
 import static io.fabric8.kubernetes.client.dsl.internal.core.v1.PodOperationsImpl.shellQuote;
 import static java.lang.Boolean.TRUE;
 import static java.lang.String.format;
 import static java.lang.reflect.Proxy.newProxyInstance;
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.time.Duration.ofSeconds;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toMap;
@@ -69,8 +77,11 @@ public class PodEngine<T extends Container<T>> {
     public static final String RUNNING = "Running";
     public static final String PENDING = "Pending";
     public static final String UNKNOWN = "Unknown";
+    private static final String HASH_LABEL = "org.testcontainers.hash";
     protected final PodNameGenerator podNameGenerator;
     private final T container;
+    @Getter
+    protected JsonMapper jsonMapper = config(new JsonMapper());
     protected KubernetesClient kubernetesClient;
     @Getter
     @Setter
@@ -102,6 +113,7 @@ public class PodEngine<T extends Container<T>> {
     private Map<Transferable, String> copyToTransferableContainerPathMap = new HashMap<>();
     private InetAddress localPortForwardHost;
     private List<String> entryPoint;
+    private Map<String, String> labels = new HashMap<>();
 
     public PodEngine(@NonNull T container) {
         this(container, null);
@@ -117,6 +129,13 @@ public class PodEngine<T extends Container<T>> {
         this.kubernetesClient = kubernetesClient;
         this.podNameGenerator = podNameGenerator;
         this.dockerImageName = dockerImageName;
+    }
+
+    private static JsonMapper config(JsonMapper jsonMapper) {
+        return jsonMapper.rebuild()
+                .enable(SORT_PROPERTIES_ALPHABETICALLY)
+                .enable(ORDER_MAP_ENTRIES_BY_KEYS)
+                .build();
     }
 
     @SneakyThrows
@@ -175,6 +194,11 @@ public class PodEngine<T extends Container<T>> {
 
     public T withKubernetesClient(KubernetesClient kubernetesClient) {
         this.kubernetesClient = kubernetesClient;
+        return container;
+    }
+
+    public T withJsonMapper(JsonMapper jsonMapper) {
+        this.jsonMapper = config(jsonMapper);
         return container;
     }
 
@@ -332,6 +356,7 @@ public class PodEngine<T extends Container<T>> {
         var podBuilder = new PodBuilder()
                 .withMetadata(new ObjectMetaBuilder()
                         .withName(podName = podNameGenerator.generatePodName())
+                        .addToLabels(labels)
                         .build())
                 .withSpec(new PodSpecBuilder()
                         .withSecurityContext(new PodSecurityContextBuilder()
@@ -365,13 +390,14 @@ public class PodEngine<T extends Container<T>> {
 
         var kubernetesClient = this.kubernetesClient;
 
-        var pod = kubernetesClient.resource(podBuilder.build()).create();
+        var pod = podBuilder.build();
+        pod.getMetadata().getLabels().put(HASH_LABEL, hash(pod));
 
-        this.pod = kubernetesClient.pods().resource(pod);
+        this.pod = kubernetesClient.pods().resource(kubernetesClient.resource(pod).create());
 
         var containerInfo = new InspectContainerResponse();
 
-        //todo fill response
+        //todo fill containerInfo
         containerIsStarting(containerInfo, false);
 
         waitUntilPodStarted();
@@ -381,8 +407,13 @@ public class PodEngine<T extends Container<T>> {
 
         copyToTransferableContainerPathMap.forEach(this::copyFileToContainer);
 
-        //todo fill response
+        //todo fill containerInfo
         containerIsStarted(containerInfo, false);
+    }
+
+    @SneakyThrows
+    protected String hash(Pod pod) {
+        return Hashing.sha1().hashBytes(jsonMapper.writeValueAsBytes(pod)).toString();
     }
 
     public void stop() {
@@ -458,6 +489,10 @@ public class PodEngine<T extends Container<T>> {
         }
     }
 
+    void addFileSystemBind(String hostPath, String containerPath, BindMode mode, SelinuxContext selinuxContext) {
+        throw new UnsupportedOperationException("addFileSystemBind");
+    }
+
     @SneakyThrows
     public Container.ExecResult execInContainer(Charset outputCharset, String... command) {
         var hasShellCall = command.length > 1 && command[0].equals("sh") && command[1].equals("-c");
@@ -468,7 +503,6 @@ public class PodEngine<T extends Container<T>> {
             System.arraycopy(command, 0, newCmd, 2, command.length);
             command = newCmd;
         }
-
 
         try (var execWatch = pod.redirectingOutput().redirectingError().exec(command)) {
             var exited = execWatch.exitCode();
@@ -485,6 +519,21 @@ public class PodEngine<T extends Container<T>> {
         }
     }
 
+    public Container.ExecResult execInContainerWithUser(String user, String... command) {
+        return execInContainerWithUser(UTF_8, user, command);
+    }
+
+    public Container.ExecResult execInContainerWithUser(Charset outputCharset, String user, String... command) {
+        throw new UnsupportedOperationException("execInContainerWithUser");
+    }
+
+    public T withLabel(String key, String value) {
+        if (key.startsWith("org.testcontainers")) {
+            throw new IllegalArgumentException("The org.testcontainers namespace is reserved for interal use");
+        }
+        labels.put(key, value);
+        return container;
+    }
 
     protected void waitUntilPodStarted() {
         var startTime = System.currentTimeMillis();
