@@ -20,7 +20,7 @@ public class PostgresqlPod<T extends PostgresqlPod<T>> extends JdbcDatabasePod<T
         this("postgres:9.6.12");
     }
 
-    PostgresqlPod(final String dockerImageName) {
+    public PostgresqlPod(final String dockerImageName) {
         super(dockerImageName);
 
         withRunAsNonRoot(true).withRunAsUser(POSTGRES_USER_ID).withFsGroup(POSTGRES_GROUP_ID);
