@@ -6,7 +6,7 @@ import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
-public class PostgresqlPod<T extends PostgresqlPod<T>> extends JdbcDatabasePod<T> {
+public class PostgresqlPod extends JdbcDatabasePod<PostgresqlPod> {
 
     public static final int POSTGRES_PORT = 5432;
     public static final long POSTGRES_USER_ID = 999L;
@@ -23,7 +23,7 @@ public class PostgresqlPod<T extends PostgresqlPod<T>> extends JdbcDatabasePod<T
     public PostgresqlPod(final String dockerImageName) {
         super(dockerImageName);
 
-        withRunAsNonRoot(true).withRunAsUser(POSTGRES_USER_ID).withFsGroup(POSTGRES_GROUP_ID);
+        withRunAsNonRoot(true).withRunAsUser(POSTGRES_USER_ID).withRunAsGroup(POSTGRES_GROUP_ID).withFsGroup(POSTGRES_GROUP_ID);
 
         waitStrategy = new PodLogMessageWaitStrategy()
                 .withRegEx(".*database system is ready to accept connections.*\\s")
@@ -57,8 +57,8 @@ public class PostgresqlPod<T extends PostgresqlPod<T>> extends JdbcDatabasePod<T
     @Override
     protected void configure() {
         withUrlParam("loggerLevel", "OFF");
-        addEnv("POSTGRES_DB", "test");
-        addEnv("POSTGRES_USER", "test");
-        addEnv("POSTGRES_PASSWORD", "test");
+        addEnv("POSTGRES_DB", getDatabaseName());
+        addEnv("POSTGRES_USER", getUsername());
+        addEnv("POSTGRES_PASSWORD", getPassword());
     }
 }

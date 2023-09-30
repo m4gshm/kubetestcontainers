@@ -53,7 +53,6 @@ public class JdbcDatabasePod<T extends JdbcDatabasePod<T>> extends JdbcDatabaseC
     @Override
     public void start() {
         getPod().start();
-        runInitScriptIfRequired();
     }
 
     @Override

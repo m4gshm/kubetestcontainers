@@ -78,10 +78,15 @@ public class PodEngine<T extends Container<T>> {
     public static final String PENDING = "Pending";
     public static final String UNKNOWN = "Unknown";
     private static final String HASH_LABEL = "org.testcontainers.hash";
+    public static final String ORG_TESTCONTAINERS_TYPE = "org.testcontainers.type";
+    public static final String KUBECONTAINERS = "kubecontainers";
     protected final PodNameGenerator podNameGenerator;
     private final T container;
+    private final Map<Transferable, String> copyToTransferableContainerPathMap = new HashMap<>();
+    private final Map<String, String> labels = new HashMap<>();
     @Getter
     protected JsonMapper jsonMapper = config(new JsonMapper());
+    protected KubernetesClientBuilder kubernetesClientBuilder;
     protected KubernetesClient kubernetesClient;
     @Getter
     @Setter
@@ -91,8 +96,11 @@ public class PodEngine<T extends Container<T>> {
     @Getter
     protected Long runAsUser;
     @Getter
+    protected Long runAsGroup;
+    @Getter
     protected Long fsGroup;
     protected boolean privilegedMode;
+    protected boolean allowPrivilegeEscalation;
     protected String imagePullPolicy = "Always";
     @Getter
     protected Duration startupTimeout = ofSeconds(60);
@@ -105,28 +113,27 @@ public class PodEngine<T extends Container<T>> {
     @Getter
     private UnaryOperator<PodBuilder> podBuilderCustomizer;
     @Getter
+    private UnaryOperator<ContainerBuilder> containerBuilderCustomizer;
+    @Getter
     private String podContainerName = "main";
     private String podName;
     private boolean deletePodOnStop = true;
     @Getter(PROTECTED)
     private boolean started;
-    private Map<Transferable, String> copyToTransferableContainerPathMap = new HashMap<>();
     private InetAddress localPortForwardHost;
     private List<String> entryPoint;
-    private Map<String, String> labels = new HashMap<>();
 
     public PodEngine(@NonNull T container) {
         this(container, null);
     }
 
     public PodEngine(@NonNull T container, String dockerImageName) {
-        this(container, dockerImageName, new KubernetesClientBuilder().build(), new DefaultPodNameGenerator());
+        this(container, dockerImageName, new DefaultPodNameGenerator());
     }
 
-    public PodEngine(@NonNull T container, String dockerImageName, @NonNull KubernetesClient kubernetesClient,
+    public PodEngine(@NonNull T container, String dockerImageName,
                      @NonNull PodNameGenerator podNameGenerator) {
         this.container = container;
-        this.kubernetesClient = kubernetesClient;
         this.podNameGenerator = podNameGenerator;
         this.dockerImageName = dockerImageName;
     }
@@ -197,6 +204,11 @@ public class PodEngine<T extends Container<T>> {
         return container;
     }
 
+    public T withKubernetesClientBuilder(KubernetesClientBuilder kubernetesClientBuilder) {
+        this.kubernetesClientBuilder = kubernetesClientBuilder;
+        return container;
+    }
+
     public T withJsonMapper(JsonMapper jsonMapper) {
         this.jsonMapper = config(jsonMapper);
         return container;
@@ -212,6 +224,11 @@ public class PodEngine<T extends Container<T>> {
         return container;
     }
 
+    public T withRunAsGroup(Long runAsGroup) {
+        this.runAsGroup = runAsGroup;
+        return container;
+    }
+
     public T withFsGroup(Long fsGroup) {
         this.fsGroup = fsGroup;
         return container;
@@ -219,6 +236,11 @@ public class PodEngine<T extends Container<T>> {
 
     public T withPodBuilderCustomizer(UnaryOperator<PodBuilder> podBuilderCustomizer) {
         this.podBuilderCustomizer = podBuilderCustomizer;
+        return container;
+    }
+
+    public T withContainerBuilderCustomizer(UnaryOperator<ContainerBuilder> podContainerBuilderCustomizer) {
+        this.containerBuilderCustomizer = podContainerBuilderCustomizer;
         return container;
     }
 
@@ -252,6 +274,12 @@ public class PodEngine<T extends Container<T>> {
         this.privilegedMode = privilegedMode;
         return container;
     }
+
+    public T withAllowPrivilegeEscalation(boolean allowPrivilegeEscalation) {
+        this.allowPrivilegeEscalation = allowPrivilegeEscalation;
+        return container;
+    }
+
 
     public void setStartupTimeout(Duration startTimeout) {
         this.startupTimeout = startTimeout;
@@ -353,10 +381,32 @@ public class PodEngine<T extends Container<T>> {
 
     public void start() {
         configure();
+        allowPrivilegeEscalation = false;
+        var containerBuilder = new ContainerBuilder()
+                .withImagePullPolicy(imagePullPolicy)
+                .withImage(getDockerImageName())
+                .withSecurityContext(new SecurityContextBuilder()
+                        .withRunAsNonRoot(runAsNonRoot)
+                        .withRunAsUser(runAsUser)
+                        .withRunAsGroup(runAsGroup)
+                        .withPrivileged(privilegedMode)
+                        .withAllowPrivilegeEscalation(allowPrivilegeEscalation)
+                        .build())
+                .withName(podContainerName)
+                .withArgs(container.getCommandParts())
+                .withCommand(entryPoint)
+                .withPorts(buildContainerPorts())
+                .withEnv(container.getEnvMap().entrySet().stream().map(e ->
+                        new EnvVarBuilder().withName(e.getKey()).withValue(e.getValue()).build()).toList());
+        if (containerBuilderCustomizer != null) {
+            containerBuilder = containerBuilderCustomizer.apply(containerBuilder);
+        }
+
         var podBuilder = new PodBuilder()
                 .withMetadata(new ObjectMetaBuilder()
                         .withName(podName = podNameGenerator.generatePodName())
                         .addToLabels(labels)
+                        .addToLabels(Map.of(ORG_TESTCONTAINERS_TYPE, KUBECONTAINERS))
                         .build())
                 .withSpec(new PodSpecBuilder()
                         .withSecurityContext(new PodSecurityContextBuilder()
@@ -367,28 +417,14 @@ public class PodEngine<T extends Container<T>> {
                         .withImagePullSecrets(new LocalObjectReferenceBuilder()
                                 .withName(imagePullSecretName)
                                 .build())
-                        .withContainers(new ContainerBuilder()
-                                .withImagePullPolicy(imagePullPolicy)
-                                .withImage(getDockerImageName())
-                                .withSecurityContext(new SecurityContextBuilder()
-                                        .withRunAsNonRoot(runAsNonRoot)
-                                        .withRunAsUser(runAsUser)
-                                        .withPrivileged(privilegedMode)
-                                        .build())
-                                .withName(podContainerName)
-                                .withArgs(container.getCommandParts())
-                                .withCommand(entryPoint)
-                                .withPorts(buildContainerPorts())
-                                .withEnv(container.getEnvMap().entrySet().stream().map(e ->
-                                        new EnvVarBuilder().withName(e.getKey()).withValue(e.getValue()).build()).toList())
-                                .build())
+                        .withContainers(containerBuilder.build())
                         .build());
 
         if (podBuilderCustomizer != null) {
             podBuilder = podBuilderCustomizer.apply(podBuilder);
         }
 
-        var kubernetesClient = this.kubernetesClient;
+        var kubernetesClient = kubernetesClient();
 
         var pod = podBuilder.build();
         pod.getMetadata().getLabels().put(HASH_LABEL, hash(pod));
@@ -409,6 +445,18 @@ public class PodEngine<T extends Container<T>> {
 
         //todo fill containerInfo
         containerIsStarted(containerInfo, false);
+    }
+
+    protected KubernetesClient kubernetesClient() {
+        var kubernetesClient = this.kubernetesClient;
+        if (kubernetesClient == null) {
+            var kubernetesClientBuilder = this.kubernetesClientBuilder;
+            if (kubernetesClientBuilder == null) {
+                this.kubernetesClientBuilder = kubernetesClientBuilder = new KubernetesClientBuilder();
+            }
+            this.kubernetesClient = kubernetesClient = kubernetesClientBuilder.build();
+        }
+        return kubernetesClient;
     }
 
     @SneakyThrows
