@@ -79,16 +79,6 @@ public class JdbcDatabasePod<T extends JdbcDatabasePod<T>> extends JdbcDatabaseC
     }
 
     @Override
-    public T withStartupTimeoutSeconds(int startupTimeoutSeconds) {
-        return super.withStartupTimeoutSeconds(startupTimeoutSeconds);
-    }
-
-    @Override
-    public T withConnectTimeoutSeconds(int connectTimeoutSeconds) {
-        return super.withConnectTimeoutSeconds(connectTimeoutSeconds);
-    }
-
-    @Override
     public String toString() {
         return this.getClass().getSimpleName() + "{" + podEngine.toStringFields() + "}";
     }

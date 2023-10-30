@@ -15,9 +15,9 @@ dependencies {
     compileOnly("org.projectlombok:lombok:1.18.28")
     testAnnotationProcessor("org.projectlombok:lombok:1.18.28")
 
-    implementation("org.testcontainers:testcontainers:1.19.0")
-    compileOnly("org.testcontainers:jdbc:1.19.0")
-    compileOnly("org.testcontainers:postgresql:1.19.0")
+    implementation("org.testcontainers:testcontainers:1.19.1")
+    compileOnly("org.testcontainers:jdbc:1.19.1")
+    compileOnly("org.testcontainers:postgresql:1.19.1")
     compileOnly("org.testcontainers:mongodb:1.19.0")
 
     implementation("io.fabric8:kubernetes-client:6.8.1")

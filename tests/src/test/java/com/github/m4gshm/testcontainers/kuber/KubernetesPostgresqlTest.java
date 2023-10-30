@@ -22,11 +22,11 @@ public class KubernetesPostgresqlTest extends AbstractSpringDataJpaTest {
         @SneakyThrows
         protected JdbcDatabaseContainer<?> newContainer() {
             return new PostgresqlPod()
+                    .withDeletePodOnStop(false)
                     .withLocalPortForwardHost(getByName("localhost"))
                     .withStartupTimeout(ofSeconds(10))
                     .withConnectTimeoutSeconds(10)
                     .withStartupTimeoutSeconds(10);
         }
-
     }
 }

@@ -1,6 +1,7 @@
 package com.github.m4gshm.testcontainers;
 
 import lombok.SneakyThrows;
+import lombok.extern.slf4j.Slf4j;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
@@ -8,12 +9,14 @@ import org.testcontainers.containers.GenericContainer;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.IOException;
 import java.io.InputStream;
 
 import static java.util.UUID.randomUUID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.testcontainers.utility.MountableFile.forClasspathResource;
 
+@Slf4j
 @Disabled
 public abstract class AbstractUploadAndExecBashScriptTest {
     @NotNull
@@ -22,6 +25,11 @@ public abstract class AbstractUploadAndExecBashScriptTest {
         try (var srcStream = inputStream) {
             return new String(srcStream.readAllBytes());
         }
+    }
+
+    protected static void ls(GenericContainer<? extends GenericContainer<?>> container, String dir) throws IOException, InterruptedException {
+        var execResult = container.execInContainer("ls -la " + dir);
+        log.info("ls {} -> {} ", dir, execResult.getStdout());
     }
 
     protected abstract GenericContainer<?> newContainer();
@@ -33,6 +41,7 @@ public abstract class AbstractUploadAndExecBashScriptTest {
                 .withCopyToContainer(forClasspathResource("/scripts/test_script.sh", 0777), "/entry.sh")
         ) {
             container.start();
+            ls(container, "/entry.sh");
             var execResult = container.execInContainer("/entry.sh");
 
             var exitCode = execResult.getExitCode();
@@ -51,6 +60,7 @@ public abstract class AbstractUploadAndExecBashScriptTest {
                 .withCopyToContainer(forClasspathResource("scripts"), "/scripts")
         ) {
             container.start();
+            ls(container, "/scripts");
             var execResult = container.execInContainer("sh", "-c", "cd /scripts && ./test_script.sh");
 
             var exitCode = execResult.getExitCode();
@@ -79,6 +89,9 @@ public abstract class AbstractUploadAndExecBashScriptTest {
             var outFile = new File(outDir, "out.sh");
 
             container.start();
+
+            ls(container, containerFile);
+
             container.copyFileFromContainer(containerFile, outFile.getAbsolutePath());
 
             var content = AbstractUploadAndExecBashScriptTest.readString(new FileInputStream(outFile));
