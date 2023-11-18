@@ -89,6 +89,7 @@ public class PodEngine<T extends Container<T>> {
     private final T container;
     private final Map<Transferable, String> copyToTransferableContainerPathMap = new HashMap<>();
     private final Map<String, String> labels = new HashMap<>();
+    private final Map<Integer, Integer> hostPorts = new HashMap<>();
     @Getter
     protected JsonMapper jsonMapper = config(new JsonMapper());
     protected KubernetesClientBuilder kubernetesClientBuilder;
@@ -114,6 +115,7 @@ public class PodEngine<T extends Container<T>> {
     private PodResource pod;
     private boolean localPortForwardEnabled = true;
     private Map<Integer, LocalPortForward> localPortForwards = Map.of();
+    private boolean hostPortEnabled = false;
     @Getter
     private String imagePullSecretName;
     @Getter
@@ -131,6 +133,7 @@ public class PodEngine<T extends Container<T>> {
     @Getter
     private boolean shouldBeReused;
     private boolean reused;
+
 
     public PodEngine(@NonNull T container) {
         this(container, null);
@@ -509,11 +512,7 @@ public class PodEngine<T extends Container<T>> {
                 .withName(podContainerName)
                 .withArgs(getArgs())
                 .withCommand(entryPoint)
-                .withPorts(getExposedPorts().stream().map(port -> new ContainerPortBuilder()
-                        .withContainerPort(port)
-                        .withProtocol(portProtocol)
-                        .withHostPort(port)
-                        .build()).toList())
+                .withPorts(getContainerPorts())
                 .withEnv(getVars());
         if (containerBuilderCustomizer != null) {
             containerBuilder = containerBuilderCustomizer.apply(containerBuilder);
@@ -544,6 +543,19 @@ public class PodEngine<T extends Container<T>> {
             podBuilder = podBuilderCustomizer.apply(podBuilder);
         }
         return podBuilder;
+    }
+
+    @NotNull
+    protected List<ContainerPort> getContainerPorts() {
+        return getExposedPorts().stream().map(port -> {
+            var portBuilder = new ContainerPortBuilder()
+                    .withContainerPort(port)
+                    .withProtocol(portProtocol);
+            if (hostPortEnabled) {
+                portBuilder.withHostPort(hostPorts.get(port));
+            }
+            return portBuilder.build();
+        }).toList();
     }
 
     @NotNull
@@ -884,6 +896,10 @@ public class PodEngine<T extends Container<T>> {
         if (getContainerId() == null) {
             throw new IllegalStateException(funcName + " can only be used with running pod");
         }
+    }
+
+    public void addHostPort(Integer port, Integer hostPort) {
+        this.hostPorts.put(port, hostPort);
     }
 
 }
