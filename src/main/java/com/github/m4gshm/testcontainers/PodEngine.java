@@ -6,19 +6,7 @@ import com.github.dockerjava.api.command.CreateContainerCmd;
 import com.github.dockerjava.api.command.InspectContainerResponse;
 import com.github.m4gshm.testcontainers.wait.PodLogMessageWaitStrategy;
 import com.github.m4gshm.testcontainers.wait.PodPortWaitStrategy;
-import io.fabric8.kubernetes.api.model.ContainerBuilder;
-import io.fabric8.kubernetes.api.model.ContainerPort;
-import io.fabric8.kubernetes.api.model.ContainerPortBuilder;
-import io.fabric8.kubernetes.api.model.EnvVar;
-import io.fabric8.kubernetes.api.model.EnvVarBuilder;
-import io.fabric8.kubernetes.api.model.ListOptionsBuilder;
-import io.fabric8.kubernetes.api.model.LocalObjectReferenceBuilder;
-import io.fabric8.kubernetes.api.model.ObjectMetaBuilder;
-import io.fabric8.kubernetes.api.model.Pod;
-import io.fabric8.kubernetes.api.model.PodBuilder;
-import io.fabric8.kubernetes.api.model.PodSecurityContextBuilder;
-import io.fabric8.kubernetes.api.model.PodSpecBuilder;
-import io.fabric8.kubernetes.api.model.SecurityContextBuilder;
+import io.fabric8.kubernetes.api.model.*;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClientBuilder;
 import io.fabric8.kubernetes.client.LocalPortForward;
@@ -31,10 +19,8 @@ import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import org.jetbrains.annotations.NotNull;
-import org.testcontainers.containers.BindMode;
 import org.testcontainers.containers.Container;
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.SelinuxContext;
 import org.testcontainers.containers.output.OutputFrame;
 import org.testcontainers.containers.wait.strategy.HostPortWaitStrategy;
 import org.testcontainers.containers.wait.strategy.LogMessageWaitStrategy;
@@ -46,24 +32,24 @@ import org.testcontainers.shaded.com.google.common.hash.Hashing;
 import org.testcontainers.utility.MountableFile;
 import org.testcontainers.utility.ThrowingFunction;
 
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
 
 import static com.fasterxml.jackson.databind.MapperFeature.SORT_PROPERTIES_ALPHABETICALLY;
 import static com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS;
-import static io.fabric8.kubernetes.client.dsl.internal.core.v1.PodOperationsImpl.shellQuote;
 import static java.lang.Boolean.TRUE;
 import static java.lang.String.format;
 import static java.lang.reflect.Proxy.newProxyInstance;
@@ -134,7 +120,6 @@ public class PodEngine<T extends Container<T>> {
     private boolean shouldBeReused;
     private boolean reused;
 
-
     public PodEngine(@NonNull T container) {
         this(container, null);
     }
@@ -187,6 +172,20 @@ public class PodEngine<T extends Container<T>> {
         } catch (IOException e) {
             return "";
         }
+    }
+
+    static String createExecCommandForUpload(String file) {
+        String directoryTrimmedFromFilePath = file.substring(0, file.lastIndexOf('/'));
+        final String directory = directoryTrimmedFromFilePath.isEmpty() ? "/" : directoryTrimmedFromFilePath;
+        return String.format("cat - > %s", shellQuote(file));
+    }
+
+    public static String shellQuote(String value) {
+        return "'" + escapeQuotes(value) + "'";
+    }
+
+    public static String escapeQuotes(String value) {
+        return value.replace("'", "'\\''");
     }
 
     @Override
@@ -625,39 +624,49 @@ public class PodEngine<T extends Container<T>> {
 
     @SneakyThrows
     public void uploadTmpTar(byte[] payload) {
-        var tarName = "/tmp/testcontainer-" + this.podName + ".tar";
-        var tarUploaded = false;
-        var wait = 100L;
-        var attempt = 0;
-        while (!tarUploaded && attempt < 10) {
-            log.info("tar not uploaded, trying to repeat, {}", tarName);
-            tarUploaded = pod.file(tarName).upload(new ByteArrayInputStream(payload));
-            if (!tarUploaded) {
-                Thread.sleep(wait);
-                wait = (long) (wait * 1.5);
-                attempt++;
-            }
+        var tmpDir = "/tmp";
+        var tarName = tmpDir + "/" + this.podName + ".tar";
+        log.debug("tar uploading {}", tarName);
+
+        var escapedTarPath = escapeQuotes(tarName);
+        try (var ignored = pod.terminateOnError().exec("touch", escapedTarPath)) {
         }
 
-        if (!tarUploaded) {
-            throw new UploadFileException("tmp tar not uploaded, " + tarName);
+        try (var uploadWatch = pod.redirectingInput().terminateOnError().exec("cp", "/dev/stdin", escapedTarPath)) {
+            var input = uploadWatch.getInput();
+            input.write(payload);
+            input.flush();
+
+            var byteCount = new ByteArrayOutputStream();
+            try (var countWatch = pod.writingOutput(byteCount).terminateOnError().exec("sh", "-c", "wc -c < " + escapedTarPath)) {
+                var exitCode = countWatch.exitCode().get();
+                var remoteSizeRaw = new String(byteCount.toByteArray(), UTF_8).trim();
+                int uploadedSize = Integer.parseInt(remoteSizeRaw);
+                if (uploadedSize != payload.length) {
+                    throw new UploadFileException("Unexpected file size " + uploadedSize + ", expected " +
+                            payload.length + ", file '" + tarName + "'");
+                }
+            }
         }
 
         var unpackDir = "/";
         var extractTarCmd = format("mkdir -p %1$s; tar -C %1$s -xmf %2$s; e=$?; rm %2$s; exit $e",
                 shellQuote(unpackDir), tarName);
 
-        try (var exec = pod.redirectingInput().redirectingOutput().redirectingError().exec("sh", "-c", extractTarCmd)) {
+
+        var out = new ByteArrayOutputStream();
+        var err = new ByteArrayOutputStream();
+        try (var exec = pod.redirectingInput().writingOutput(out).writingError(err).exec("sh", "-c", extractTarCmd)) {
             var exitedCode = exec.exitCode();
             var exitCode = exitedCode.get();
             var unpacked = exitCode == 0;
             if (!unpacked) {
                 throw new UploadFileException("unpack temporary tar " + tarName +
                         ", exit code " + exitCode +
-                        ", out '" + getOut(exec) + "'" +
-                        ", errOut '" + getError(exec) + "'");
+                        ", out '" + new String(out.toByteArray(), UTF_8) + "'" +
+                        ", errOut '" + new String(err.toByteArray(), UTF_8) + "'");
             } else {
-                log.debug("upload tar -> {}", getOut(exec));
+                log.debug("upload tar -> {}", new String(out.toByteArray(), UTF_8));
             }
         }
     }
@@ -673,10 +682,6 @@ public class PodEngine<T extends Container<T>> {
             }
             return deleted;
         }
-    }
-
-    void addFileSystemBind(String hostPath, String containerPath, BindMode mode, SelinuxContext selinuxContext) {
-        throw new UnsupportedOperationException("addFileSystemBind");
     }
 
     @SneakyThrows
