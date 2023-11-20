@@ -6,12 +6,27 @@ import com.github.dockerjava.api.command.CreateContainerCmd;
 import com.github.dockerjava.api.command.InspectContainerResponse;
 import com.github.m4gshm.testcontainers.wait.PodLogMessageWaitStrategy;
 import com.github.m4gshm.testcontainers.wait.PodPortWaitStrategy;
-import io.fabric8.kubernetes.api.model.*;
+import io.fabric8.kubernetes.api.model.ContainerBuilder;
+import io.fabric8.kubernetes.api.model.ContainerPort;
+import io.fabric8.kubernetes.api.model.ContainerPortBuilder;
+import io.fabric8.kubernetes.api.model.EnvVar;
+import io.fabric8.kubernetes.api.model.EnvVarBuilder;
+import io.fabric8.kubernetes.api.model.ListOptionsBuilder;
+import io.fabric8.kubernetes.api.model.LocalObjectReferenceBuilder;
+import io.fabric8.kubernetes.api.model.ObjectMetaBuilder;
+import io.fabric8.kubernetes.api.model.Pod;
+import io.fabric8.kubernetes.api.model.PodBuilder;
+import io.fabric8.kubernetes.api.model.PodSecurityContextBuilder;
+import io.fabric8.kubernetes.api.model.PodSpecBuilder;
+import io.fabric8.kubernetes.api.model.SecurityContextBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClientBuilder;
 import io.fabric8.kubernetes.client.LocalPortForward;
+import io.fabric8.kubernetes.client.RequestConfig;
 import io.fabric8.kubernetes.client.dsl.ExecWatch;
 import io.fabric8.kubernetes.client.dsl.PodResource;
+import io.fabric8.kubernetes.client.dsl.internal.ExecWebSocketListener;
+import io.fabric8.kubernetes.client.dsl.internal.OperationSupport;
 import lombok.Getter;
 import lombok.NonNull;
 import lombok.Setter;
@@ -38,13 +53,12 @@ import java.io.InputStream;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
 
@@ -57,6 +71,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.time.Duration.ofSeconds;
 import static java.util.Objects.requireNonNull;
 import static java.util.Optional.ofNullable;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.stream.Collectors.toMap;
 import static lombok.AccessLevel.PROTECTED;
 import static org.apache.commons.compress.archivers.tar.TarArchiveOutputStream.BIGNUMBER_POSIX;
@@ -632,27 +647,11 @@ public class PodEngine<T extends Container<T>> {
         try (var ignored = pod.terminateOnError().exec("touch", escapedTarPath)) {
         }
 
-        try (var uploadWatch = pod.redirectingInput().terminateOnError().exec("cp", "/dev/stdin", escapedTarPath)) {
-            var input = uploadWatch.getInput();
-            input.write(payload);
-            input.flush();
-
-            var byteCount = new ByteArrayOutputStream();
-            try (var countWatch = pod.writingOutput(byteCount).terminateOnError().exec("sh", "-c", "wc -c < " + escapedTarPath)) {
-                var exitCode = countWatch.exitCode().get();
-                var remoteSizeRaw = new String(byteCount.toByteArray(), UTF_8).trim();
-                int uploadedSize = Integer.parseInt(remoteSizeRaw);
-                if (uploadedSize != payload.length) {
-                    throw new UploadFileException("Unexpected file size " + uploadedSize + ", expected " +
-                            payload.length + ", file '" + tarName + "'");
-                }
-            }
-        }
+        uploadBase64(payload, escapedTarPath);
 
         var unpackDir = "/";
         var extractTarCmd = format("mkdir -p %1$s; tar -C %1$s -xmf %2$s; e=$?; rm %2$s; exit $e",
                 shellQuote(unpackDir), tarName);
-
 
         var out = new ByteArrayOutputStream();
         var err = new ByteArrayOutputStream();
@@ -663,11 +662,60 @@ public class PodEngine<T extends Container<T>> {
             if (!unpacked) {
                 throw new UploadFileException("unpack temporary tar " + tarName +
                         ", exit code " + exitCode +
-                        ", out '" + new String(out.toByteArray(), UTF_8) + "'" +
-                        ", errOut '" + new String(err.toByteArray(), UTF_8) + "'");
+                        ", out '" + out.toString(UTF_8) + "'" +
+                        ", errOut '" + err.toString(UTF_8) + "'");
             } else {
-                log.debug("upload tar -> {}", new String(out.toByteArray(), UTF_8));
+                log.debug("upload tar -> {}", out.toString(UTF_8));
             }
+        }
+    }
+
+    @SneakyThrows
+    private void uploadStdIn(byte[] payload, String escapedTarPath) {
+        try (var uploadWatch = (ExecWebSocketListener) pod.redirectingInput().terminateOnError().exec("cp", "/dev/stdin", escapedTarPath)) {
+            var input = uploadWatch.getInput();
+            input.write(payload);
+            input.flush();
+            checkSize(escapedTarPath, payload.length);
+        }
+    }
+
+
+    @SneakyThrows
+    private void uploadBase64(byte[] payload, String escapedTarPath) {
+        var encoded = Base64.getEncoder().encodeToString(payload);
+        try (var uploadWatch = pod.terminateOnError().exec("sh", "-c", "echo " + encoded + "| base64 -d >" + "'" + escapedTarPath + "'")) {
+            var code = uploadWatch.exitCode().get(getRequestConfig().getRequestTimeout(), MILLISECONDS);
+            if (code != 0) {
+                throw new UploadFileException("Unexpected exit code " + code + ", file '" + escapedTarPath + "'");
+            }
+            checkSize(escapedTarPath, payload.length);
+        }
+    }
+
+    private RequestConfig getRequestConfig() {
+        return ((OperationSupport) pod).getRequestConfig();
+    }
+
+    @SneakyThrows
+    private void checkSize(String filePath, long expected) {
+        var size = getSize(filePath);
+        if (size != expected) {
+            Thread.sleep(100);
+            size = getSize(filePath);
+        }
+        if (size != expected) {
+            throw new UploadFileException("Unexpected file size " + size + ", expected " + expected + ", file '" + filePath + "'");
+        }
+    }
+
+    @SneakyThrows
+    private long getSize(String filePath) {
+        var byteCount = new ByteArrayOutputStream();
+        try (var countWatch = pod.writingOutput(byteCount).terminateOnError().exec("sh", "-c", "wc -c < " + filePath)) {
+            var exitCode = countWatch.exitCode().get();
+            var remoteSizeRaw = new String(byteCount.toByteArray(), UTF_8).trim();
+            return Integer.parseInt(remoteSizeRaw);
         }
     }
 
