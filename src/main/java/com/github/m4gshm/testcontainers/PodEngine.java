@@ -27,6 +27,7 @@ import io.fabric8.kubernetes.client.dsl.ExecWatch;
 import io.fabric8.kubernetes.client.dsl.PodResource;
 import io.fabric8.kubernetes.client.dsl.internal.ExecWebSocketListener;
 import io.fabric8.kubernetes.client.dsl.internal.OperationSupport;
+import io.fabric8.kubernetes.client.http.WebSocket;
 import lombok.Getter;
 import lombok.NonNull;
 import lombok.Setter;
@@ -59,6 +60,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
 
@@ -201,6 +204,25 @@ public class PodEngine<T extends Container<T>> {
 
     public static String escapeQuotes(String value) {
         return value.replace("'", "'\\''");
+    }
+
+    @SneakyThrows
+    private static ExecWatch waitEmptyQueue(ExecWatch exec) {
+        var webSocketRefFld = ExecWebSocketListener.class.getDeclaredField("webSocketRef");
+        webSocketRefFld.setAccessible(true);
+        var webSocketRef = (AtomicReference<WebSocket>) webSocketRefFld.get(exec);
+        var webSocket = webSocketRef.get();
+        var inQueue = webSocket.queueSize();
+        while (inQueue > 0) {
+            Thread.yield();
+            inQueue = webSocket.queueSize();
+        }
+        return exec;
+    }
+
+
+    private int getRequestTimeout() {
+        return kubernetesClient().getConfiguration().getRequestTimeout();
     }
 
     @Override
@@ -644,10 +666,12 @@ public class PodEngine<T extends Container<T>> {
         log.debug("tar uploading {}", tarName);
 
         var escapedTarPath = escapeQuotes(tarName);
-        try (var ignored = pod.terminateOnError().exec("touch", escapedTarPath)) {
+        try (var exec = pod.terminateOnError().exec("touch", escapedTarPath)) {
+            waitEmptyQueue(exec);
         }
 
-        uploadBase64(payload, escapedTarPath);
+        uploadStdIn(payload, escapedTarPath);
+//        uploadBase64(payload, escapedTarPath);
 
         var unpackDir = "/";
         var extractTarCmd = format("mkdir -p %1$s; tar -C %1$s -xmf %2$s; e=$?; rm %2$s; exit $e",
@@ -656,8 +680,9 @@ public class PodEngine<T extends Container<T>> {
         var out = new ByteArrayOutputStream();
         var err = new ByteArrayOutputStream();
         try (var exec = pod.redirectingInput().writingOutput(out).writingError(err).exec("sh", "-c", extractTarCmd)) {
+            waitEmptyQueue(exec);
             var exitedCode = exec.exitCode();
-            var exitCode = exitedCode.get();
+            var exitCode = exitedCode.get(getRequestTimeout(), MILLISECONDS);;
             var unpacked = exitCode == 0;
             if (!unpacked) {
                 throw new UploadFileException("unpack temporary tar " + tarName +
@@ -672,14 +697,14 @@ public class PodEngine<T extends Container<T>> {
 
     @SneakyThrows
     private void uploadStdIn(byte[] payload, String escapedTarPath) {
-        try (var uploadWatch = (ExecWebSocketListener) pod.redirectingInput().terminateOnError().exec("cp", "/dev/stdin", escapedTarPath)) {
-            var input = uploadWatch.getInput();
+        try (var exec = pod.redirectingInput().terminateOnError().exec("cp", "/dev/stdin", escapedTarPath)) {
+            var input = exec.getInput();
             input.write(payload);
             input.flush();
+            waitEmptyQueue(exec);
             checkSize(escapedTarPath, payload.length);
         }
     }
-
 
     @SneakyThrows
     private void uploadBase64(byte[] payload, String escapedTarPath) {
@@ -712,17 +737,18 @@ public class PodEngine<T extends Container<T>> {
     @SneakyThrows
     private long getSize(String filePath) {
         var byteCount = new ByteArrayOutputStream();
-        try (var countWatch = pod.writingOutput(byteCount).terminateOnError().exec("sh", "-c", "wc -c < " + filePath)) {
-            var exitCode = countWatch.exitCode().get();
-            var remoteSizeRaw = new String(byteCount.toByteArray(), UTF_8).trim();
+        try (var exec = pod.writingOutput(byteCount).terminateOnError().exec("sh", "-c", "wc -c < " + filePath)) {
+            var exitCode = exec.exitCode().get(getRequestTimeout(), MILLISECONDS);
+            var remoteSizeRaw = byteCount.toString(UTF_8).trim();
+            waitEmptyQueue(exec);
             return Integer.parseInt(remoteSizeRaw);
         }
     }
 
     @SneakyThrows
     public boolean removeFile(String tarName) {
-        try (var exec = pod.redirectingError().exec("rm", tarName)) {
-            var exitCode = exec.exitCode().get();
+        try (var exec = waitEmptyQueue(pod.redirectingError().exec("rm", tarName))) {
+            var exitCode = exec.exitCode().get(getRequestTimeout(), MILLISECONDS);
             var deleted = exitCode != 0;
             if (deleted) {
                 log.warn("deleting of temporary file {} finished with unexpected code {}, errOut: {}",
@@ -745,7 +771,7 @@ public class PodEngine<T extends Container<T>> {
 
         try (var execWatch = pod.redirectingOutput().redirectingError().exec(command)) {
             var exited = execWatch.exitCode();
-            var exitCode = exited.get();
+            var exitCode = exited.get(getRequestTimeout(), MILLISECONDS);;
             String errOut;
             try {
                 errOut = new String(execWatch.getError().readAllBytes(), outputCharset);
