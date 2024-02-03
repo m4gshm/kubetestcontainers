@@ -61,4 +61,5 @@ public class PostgresqlPod extends JdbcDatabasePod<PostgresqlPod> {
         addEnv("POSTGRES_USER", getUsername());
         addEnv("POSTGRES_PASSWORD", getPassword());
     }
+
 }

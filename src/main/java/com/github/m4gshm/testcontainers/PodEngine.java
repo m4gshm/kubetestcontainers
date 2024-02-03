@@ -22,8 +22,12 @@ import io.fabric8.kubernetes.api.model.SecurityContextBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClientBuilder;
 import io.fabric8.kubernetes.client.LocalPortForward;
+import io.fabric8.kubernetes.client.RequestConfig;
 import io.fabric8.kubernetes.client.dsl.ExecWatch;
 import io.fabric8.kubernetes.client.dsl.PodResource;
+import io.fabric8.kubernetes.client.dsl.internal.ExecWebSocketListener;
+import io.fabric8.kubernetes.client.dsl.internal.OperationSupport;
+import io.fabric8.kubernetes.client.http.WebSocket;
 import lombok.Getter;
 import lombok.NonNull;
 import lombok.Setter;
@@ -31,10 +35,8 @@ import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import org.jetbrains.annotations.NotNull;
-import org.testcontainers.containers.BindMode;
 import org.testcontainers.containers.Container;
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.SelinuxContext;
 import org.testcontainers.containers.output.OutputFrame;
 import org.testcontainers.containers.wait.strategy.HostPortWaitStrategy;
 import org.testcontainers.containers.wait.strategy.LogMessageWaitStrategy;
@@ -46,7 +48,6 @@ import org.testcontainers.shaded.com.google.common.hash.Hashing;
 import org.testcontainers.utility.MountableFile;
 import org.testcontainers.utility.ThrowingFunction;
 
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -54,16 +55,18 @@ import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.nio.charset.Charset;
 import java.time.Duration;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
 
 import static com.fasterxml.jackson.databind.MapperFeature.SORT_PROPERTIES_ALPHABETICALLY;
 import static com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS;
-import static io.fabric8.kubernetes.client.dsl.internal.core.v1.PodOperationsImpl.shellQuote;
 import static java.lang.Boolean.TRUE;
 import static java.lang.String.format;
 import static java.lang.reflect.Proxy.newProxyInstance;
@@ -71,6 +74,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.time.Duration.ofSeconds;
 import static java.util.Objects.requireNonNull;
 import static java.util.Optional.ofNullable;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.stream.Collectors.toMap;
 import static lombok.AccessLevel.PROTECTED;
 import static org.apache.commons.compress.archivers.tar.TarArchiveOutputStream.BIGNUMBER_POSIX;
@@ -89,6 +93,7 @@ public class PodEngine<T extends Container<T>> {
     private final T container;
     private final Map<Transferable, String> copyToTransferableContainerPathMap = new HashMap<>();
     private final Map<String, String> labels = new HashMap<>();
+    private final Map<Integer, Integer> hostPorts = new HashMap<>();
     @Getter
     protected JsonMapper jsonMapper = config(new JsonMapper());
     protected KubernetesClientBuilder kubernetesClientBuilder;
@@ -114,6 +119,7 @@ public class PodEngine<T extends Container<T>> {
     private PodResource pod;
     private boolean localPortForwardEnabled = true;
     private Map<Integer, LocalPortForward> localPortForwards = Map.of();
+    private boolean hostPortEnabled = false;
     @Getter
     private String imagePullSecretName;
     @Getter
@@ -184,6 +190,39 @@ public class PodEngine<T extends Container<T>> {
         } catch (IOException e) {
             return "";
         }
+    }
+
+    static String createExecCommandForUpload(String file) {
+        String directoryTrimmedFromFilePath = file.substring(0, file.lastIndexOf('/'));
+        final String directory = directoryTrimmedFromFilePath.isEmpty() ? "/" : directoryTrimmedFromFilePath;
+        return String.format("cat - > %s", shellQuote(file));
+    }
+
+    public static String shellQuote(String value) {
+        return "'" + escapeQuotes(value) + "'";
+    }
+
+    public static String escapeQuotes(String value) {
+        return value.replace("'", "'\\''");
+    }
+
+    @SneakyThrows
+    private static ExecWatch waitEmptyQueue(ExecWatch exec) {
+        var webSocketRefFld = ExecWebSocketListener.class.getDeclaredField("webSocketRef");
+        webSocketRefFld.setAccessible(true);
+        var webSocketRef = (AtomicReference<WebSocket>) webSocketRefFld.get(exec);
+        var webSocket = webSocketRef.get();
+        var inQueue = webSocket.queueSize();
+        while (inQueue > 0) {
+            Thread.yield();
+            inQueue = webSocket.queueSize();
+        }
+        return exec;
+    }
+
+
+    private int getRequestTimeout() {
+        return kubernetesClient().getConfiguration().getRequestTimeout();
     }
 
     @Override
@@ -509,11 +548,7 @@ public class PodEngine<T extends Container<T>> {
                 .withName(podContainerName)
                 .withArgs(getArgs())
                 .withCommand(entryPoint)
-                .withPorts(getExposedPorts().stream().map(port -> new ContainerPortBuilder()
-                        .withContainerPort(port)
-                        .withProtocol(portProtocol)
-                        .withHostPort(port)
-                        .build()).toList())
+                .withPorts(getContainerPorts())
                 .withEnv(getVars());
         if (containerBuilderCustomizer != null) {
             containerBuilder = containerBuilderCustomizer.apply(containerBuilder);
@@ -544,6 +579,19 @@ public class PodEngine<T extends Container<T>> {
             podBuilder = podBuilderCustomizer.apply(podBuilder);
         }
         return podBuilder;
+    }
+
+    @NotNull
+    protected List<ContainerPort> getContainerPorts() {
+        return getExposedPorts().stream().map(port -> {
+            var portBuilder = new ContainerPortBuilder()
+                    .withContainerPort(port)
+                    .withProtocol(portProtocol);
+            if (hostPortEnabled) {
+                portBuilder.withHostPort(hostPorts.get(port));
+            }
+            return portBuilder.build();
+        }).toList();
     }
 
     @NotNull
@@ -613,47 +661,94 @@ public class PodEngine<T extends Container<T>> {
 
     @SneakyThrows
     public void uploadTmpTar(byte[] payload) {
-        var tarName = "/tmp/testcontainer-" + this.podName + ".tar";
-        var tarUploaded = false;
-        var wait = 100L;
-        var attempt = 0;
-        while (!tarUploaded && attempt < 10) {
-            log.info("tar not uploaded, trying to repeat, {}", tarName);
-            tarUploaded = pod.file(tarName).upload(new ByteArrayInputStream(payload));
-            if (!tarUploaded) {
-                Thread.sleep(wait);
-                wait = (long) (wait * 1.5);
-                attempt++;
-            }
+        var tmpDir = "/tmp";
+        var tarName = tmpDir + "/" + this.podName + ".tar";
+        log.debug("tar uploading {}", tarName);
+
+        var escapedTarPath = escapeQuotes(tarName);
+        try (var exec = pod.terminateOnError().exec("touch", escapedTarPath)) {
+            waitEmptyQueue(exec);
         }
 
-        if (!tarUploaded) {
-            throw new UploadFileException("tmp tar not uploaded, " + tarName);
-        }
+        uploadStdIn(payload, escapedTarPath);
+//        uploadBase64(payload, escapedTarPath);
 
         var unpackDir = "/";
         var extractTarCmd = format("mkdir -p %1$s; tar -C %1$s -xmf %2$s; e=$?; rm %2$s; exit $e",
                 shellQuote(unpackDir), tarName);
 
-        try (var exec = pod.redirectingInput().redirectingOutput().redirectingError().exec("sh", "-c", extractTarCmd)) {
+        var out = new ByteArrayOutputStream();
+        var err = new ByteArrayOutputStream();
+        try (var exec = pod.redirectingInput().writingOutput(out).writingError(err).exec("sh", "-c", extractTarCmd)) {
+            waitEmptyQueue(exec);
             var exitedCode = exec.exitCode();
-            var exitCode = exitedCode.get();
+            var exitCode = exitedCode.get(getRequestTimeout(), MILLISECONDS);;
             var unpacked = exitCode == 0;
             if (!unpacked) {
                 throw new UploadFileException("unpack temporary tar " + tarName +
                         ", exit code " + exitCode +
-                        ", out '" + getOut(exec) + "'" +
-                        ", errOut '" + getError(exec) + "'");
+                        ", out '" + out.toString(UTF_8) + "'" +
+                        ", errOut '" + err.toString(UTF_8) + "'");
             } else {
-                log.debug("upload tar -> {}", getOut(exec));
+                log.debug("upload tar -> {}", out.toString(UTF_8));
             }
         }
     }
 
     @SneakyThrows
+    private void uploadStdIn(byte[] payload, String escapedTarPath) {
+        try (var exec = pod.redirectingInput().terminateOnError().exec("cp", "/dev/stdin", escapedTarPath)) {
+            var input = exec.getInput();
+            input.write(payload);
+            input.flush();
+            waitEmptyQueue(exec);
+            checkSize(escapedTarPath, payload.length);
+        }
+    }
+
+    @SneakyThrows
+    private void uploadBase64(byte[] payload, String escapedTarPath) {
+        var encoded = Base64.getEncoder().encodeToString(payload);
+        try (var uploadWatch = pod.terminateOnError().exec("sh", "-c", "echo " + encoded + "| base64 -d >" + "'" + escapedTarPath + "'")) {
+            var code = uploadWatch.exitCode().get(getRequestConfig().getRequestTimeout(), MILLISECONDS);
+            if (code != 0) {
+                throw new UploadFileException("Unexpected exit code " + code + ", file '" + escapedTarPath + "'");
+            }
+            checkSize(escapedTarPath, payload.length);
+        }
+    }
+
+    private RequestConfig getRequestConfig() {
+        return ((OperationSupport) pod).getRequestConfig();
+    }
+
+    @SneakyThrows
+    private void checkSize(String filePath, long expected) {
+        var size = getSize(filePath);
+        if (size != expected) {
+            Thread.sleep(100);
+            size = getSize(filePath);
+        }
+        if (size != expected) {
+            throw new UploadFileException("Unexpected file size " + size + ", expected " + expected + ", file '" + filePath + "'");
+        }
+    }
+
+    @SneakyThrows
+    private long getSize(String filePath) {
+        var byteCount = new ByteArrayOutputStream();
+        try (var exec = pod.writingOutput(byteCount).terminateOnError().exec("sh", "-c", "wc -c < " + filePath)) {
+            var exitCode = exec.exitCode().get(getRequestTimeout(), MILLISECONDS);
+            var remoteSizeRaw = byteCount.toString(UTF_8).trim();
+            waitEmptyQueue(exec);
+            return Integer.parseInt(remoteSizeRaw);
+        }
+    }
+
+    @SneakyThrows
     public boolean removeFile(String tarName) {
-        try (var exec = pod.redirectingError().exec("rm", tarName)) {
-            var exitCode = exec.exitCode().get();
+        try (var exec = waitEmptyQueue(pod.redirectingError().exec("rm", tarName))) {
+            var exitCode = exec.exitCode().get(getRequestTimeout(), MILLISECONDS);
             var deleted = exitCode != 0;
             if (deleted) {
                 log.warn("deleting of temporary file {} finished with unexpected code {}, errOut: {}",
@@ -661,10 +756,6 @@ public class PodEngine<T extends Container<T>> {
             }
             return deleted;
         }
-    }
-
-    void addFileSystemBind(String hostPath, String containerPath, BindMode mode, SelinuxContext selinuxContext) {
-        throw new UnsupportedOperationException("addFileSystemBind");
     }
 
     @SneakyThrows
@@ -680,7 +771,7 @@ public class PodEngine<T extends Container<T>> {
 
         try (var execWatch = pod.redirectingOutput().redirectingError().exec(command)) {
             var exited = execWatch.exitCode();
-            var exitCode = exited.get();
+            var exitCode = exited.get(getRequestTimeout(), MILLISECONDS);;
             String errOut;
             try {
                 errOut = new String(execWatch.getError().readAllBytes(), outputCharset);
@@ -884,6 +975,10 @@ public class PodEngine<T extends Container<T>> {
         if (getContainerId() == null) {
             throw new IllegalStateException(funcName + " can only be used with running pod");
         }
+    }
+
+    public void addHostPort(Integer port, Integer hostPort) {
+        this.hostPorts.put(port, hostPort);
     }
 
 }
