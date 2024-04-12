@@ -1,5 +1,12 @@
+import com.github.javaparser.JavaParserBuild.JAVA_VERSION
+
 plugins {
     `java-library`
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
 }
 
 repositories {
@@ -8,9 +15,9 @@ repositories {
 }
 
 dependencies {
-    annotationProcessor("org.projectlombok:lombok:1.18.28")
-    testImplementation("org.projectlombok:lombok:1.18.28")
-    testAnnotationProcessor("org.projectlombok:lombok:1.18.28")
+    annotationProcessor("org.projectlombok:lombok:1.18.30")
+    testImplementation("org.projectlombok:lombok:1.18.30")
+    testAnnotationProcessor("org.projectlombok:lombok:1.18.30")
 
 //    testImplementation("com.github.m4gshm:kubetestcontainers:0.1-SNAPSHOT")
     testImplementation(project(":"))
