@@ -9,6 +9,7 @@ import com.github.m4gshm.testcontainers.wait.PodPortWaitStrategy;
 import io.fabric8.kubernetes.api.model.ContainerBuilder;
 import io.fabric8.kubernetes.api.model.ContainerPort;
 import io.fabric8.kubernetes.api.model.ContainerPortBuilder;
+import io.fabric8.kubernetes.api.model.ContainerStatus;
 import io.fabric8.kubernetes.api.model.EnvVar;
 import io.fabric8.kubernetes.api.model.EnvVarBuilder;
 import io.fabric8.kubernetes.api.model.ListOptionsBuilder;
@@ -18,6 +19,7 @@ import io.fabric8.kubernetes.api.model.Pod;
 import io.fabric8.kubernetes.api.model.PodBuilder;
 import io.fabric8.kubernetes.api.model.PodSecurityContextBuilder;
 import io.fabric8.kubernetes.api.model.PodSpecBuilder;
+import io.fabric8.kubernetes.api.model.PodStatus;
 import io.fabric8.kubernetes.api.model.SecurityContextBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClientBuilder;
@@ -35,6 +37,7 @@ import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.testcontainers.containers.Container;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.output.OutputFrame;
@@ -60,14 +63,16 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
 
 import static com.fasterxml.jackson.databind.MapperFeature.SORT_PROPERTIES_ALPHABETICALLY;
 import static com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS;
+import static com.github.m4gshm.testcontainers.PodEngine.Reuse.GLOBAL;
+import static com.github.m4gshm.testcontainers.PodEngine.Reuse.SESSION;
 import static java.lang.Boolean.TRUE;
+import static java.lang.Boolean.getBoolean;
 import static java.lang.String.format;
 import static java.lang.reflect.Proxy.newProxyInstance;
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -89,6 +94,8 @@ public class PodEngine<T extends Container<T>> {
     public static final String ORG_TESTCONTAINERS_NAME = "org.testcontainers.name";
     public static final String KUBECONTAINERS = "kubecontainers";
     private static final String ORG_TESTCONTAINERS_HASH = "org.testcontainers.hash";
+    private static final String ORG_TESTCONTAINERS_DELETE_ON_STOP = "org.testcontainers.deleteOnStop";
+    private static final String ORG_TESTCONTAINERS_SESSION_LIMITED = "org.testcontainers.sessionLimited";
     protected final PodNameGenerator podNameGenerator;
     private final T container;
     private final Map<Transferable, String> copyToTransferableContainerPathMap = new HashMap<>();
@@ -129,13 +136,13 @@ public class PodEngine<T extends Container<T>> {
     @Getter
     private String podContainerName = "main";
     private String podName;
-    private boolean deletePodOnStop = true;
+    private boolean deletePodOnStop = false;
     @Getter(PROTECTED)
     private boolean started;
     private InetAddress localPortForwardHost;
     private List<String> entryPoint;
     @Getter
-    private boolean shouldBeReused;
+    private Reuse reuse = SESSION;
     private boolean reused;
 
     public PodEngine(@NonNull T container) {
@@ -220,6 +227,24 @@ public class PodEngine<T extends Container<T>> {
         return exec;
     }
 
+    private static PodResource createPod(KubernetesClient kubernetesClient, PodBuilder podBuilder) {
+        return resource(kubernetesClient, kubernetesClient.resource(podBuilder.build()).create());
+    }
+
+    private static PodResource resource(KubernetesClient kubernetesClient, Pod item) {
+        return kubernetesClient.pods().resource(item);
+    }
+
+    public static boolean isRunning(Pod pod) {
+        return RUNNING.equals(pod.getStatus().getPhase());
+    }
+
+    private static @Nullable ContainerStatus getFirstNotReadyContainer(PodStatus status) {
+        return status.getContainerStatuses().stream().filter(containerStatus -> {
+            var ready = TRUE.equals(containerStatus.getReady());
+            return !ready;
+        }).findFirst().orElse(null);
+    }
 
     private int getRequestTimeout() {
         return kubernetesClient().getConfiguration().getRequestTimeout();
@@ -379,8 +404,8 @@ public class PodEngine<T extends Container<T>> {
         return container;
     }
 
-    public T withReuse(boolean reusable) {
-        this.shouldBeReused = reusable;
+    public T withReuse(Reuse reuse) {
+        this.reuse = reuse;
         return container;
     }
 
@@ -408,7 +433,7 @@ public class PodEngine<T extends Container<T>> {
 
     public boolean isRunning() {
         var podResource = this.getPod();
-        return podResource != null && RUNNING.equals(podResource.get().getStatus().getPhase());
+        return podResource != null && isRunning(podResource.get());
     }
 
     public boolean isHealthy() {
@@ -483,38 +508,60 @@ public class PodEngine<T extends Container<T>> {
         var podBuilder = newPodBuilder(podName);
 
         var hash = hash(podBuilder.build());
-
+        var session = Session.instance();
         podBuilder
                 .editMetadata()
                 .withName(podName)
                 .addToLabels(Map.of(
                         ORG_TESTCONTAINERS_NAME, podName,
-                        ORG_TESTCONTAINERS_HASH, hash
+                        ORG_TESTCONTAINERS_HASH, hash,
+                        ORG_TESTCONTAINERS_SESSION_LIMITED, String.valueOf(reuse == SESSION),
+                        ORG_TESTCONTAINERS_DELETE_ON_STOP, String.valueOf(deletePodOnStop)
                 ))
                 .endMetadata();
 
         var kubernetesClient = kubernetesClient();
-        final Pod pod;
-        if (shouldBeReused) {
+        final PodResource podResource;
+        final PodResource findPod;
+        var reuse = this.reuse;
+        if (reuse == SESSION) {
+            findPod = session.find(hash);
+        } else if (reuse == GLOBAL) {
             var options = new ListOptionsBuilder().withLabelSelector(ORG_TESTCONTAINERS_HASH).build();
             var podList = kubernetesClient.pods().list(options);
-            var findPod = podList.getItems().stream().filter(p ->
-                            hash.equals(p.getMetadata().getLabels().get(ORG_TESTCONTAINERS_HASH)))
+            findPod = podList.getItems().stream().filter(p -> {
+                                var labels = p.getMetadata().getLabels();
+                                var deleteOnStop = getBoolean(labels.get(ORG_TESTCONTAINERS_DELETE_ON_STOP));
+                                var sessionLimited = getBoolean(labels.get(ORG_TESTCONTAINERS_SESSION_LIMITED));
+                                return isRunning(p)
+                                        && hash.equals(labels.get(ORG_TESTCONTAINERS_HASH))
+                                        && !(deleteOnStop || sessionLimited)
+                                        && getFirstNotReadyContainer(p.getStatus()) == null;
+                            }
+                    )
+                    .map(p -> resource(kubernetesClient, p))
                     .findFirst().orElse(null);
-            if (findPod == null) {
-                pod = kubernetesClient.resource(podBuilder.build()).create();
-            } else {
-                reused = true;
-                pod = findPod;
-                var metadata = pod.getMetadata();
-                var uid = metadata.getUid();
-                var name = metadata.getName();
-                log.info("reuse first appropriated pod '" + name + "' (uid " + uid + ")");
+        } else {
+            findPod = null;
+        }
+
+        if (findPod == null) {
+            podResource = createPod(kubernetesClient, podBuilder);
+            if (!deletePodOnStop && reuse == SESSION) {
+                session.registerPodForDelayedDeleting(hash, podResource);
             }
         } else {
-            pod = kubernetesClient.resource(podBuilder.build()).create();
+            reused = true;
+            podResource = findPod;
+            var pod = podResource.get();
+            var metadata = pod.getMetadata();
+            var uid = metadata.getUid();
+            var name = metadata.getName();
+            log.info("reuse first appropriated pod '{}' (uid {}), phase {}, reuse type {}",
+                    name, uid, pod.getStatus().getPhase(), reuse);
         }
-        this.pod = kubernetesClient.pods().resource(pod);
+
+        this.pod = podResource;
 
         var containerInfo = new InspectContainerResponse();
 
@@ -629,10 +676,13 @@ public class PodEngine<T extends Container<T>> {
                 log.error("close port forward error, {}", e.getMessage(), e);
             }
         }
-        if (!reused && deletePodOnStop) {
-            var podResource = this.getPod();
-            if (podResource != null) {
-                podResource.delete();
+        if (!reused) {
+            if (deletePodOnStop) {
+                var podResource = this.getPod();
+                if (podResource != null) {
+                    log.debug("delete pod on stop {}", podResource.get().getMetadata().getName());
+                    podResource.delete();
+                }
             }
         }
     }
@@ -682,7 +732,8 @@ public class PodEngine<T extends Container<T>> {
         try (var exec = pod.redirectingInput().writingOutput(out).writingError(err).exec("sh", "-c", extractTarCmd)) {
             waitEmptyQueue(exec);
             var exitedCode = exec.exitCode();
-            var exitCode = exitedCode.get(getRequestTimeout(), MILLISECONDS);;
+            var exitCode = exitedCode.get(getRequestTimeout(), MILLISECONDS);
+            ;
             var unpacked = exitCode == 0;
             if (!unpacked) {
                 throw new UploadFileException("unpack temporary tar " + tarName +
@@ -771,7 +822,8 @@ public class PodEngine<T extends Container<T>> {
 
         try (var execWatch = pod.redirectingOutput().redirectingError().exec(command)) {
             var exited = execWatch.exitCode();
-            var exitCode = exited.get(getRequestTimeout(), MILLISECONDS);;
+            var exitCode = exited.get(getRequestTimeout(), MILLISECONDS);
+            ;
             String errOut;
             try {
                 errOut = new String(execWatch.getError().readAllBytes(), outputCharset);
@@ -851,16 +903,16 @@ public class PodEngine<T extends Container<T>> {
                 throw new StartPodException("unexpected pod status", pod.getMetadata().getName(), status.getPhase());
             }
 
-            for (var containerStatus : status.getContainerStatuses()) {
-                var ready = TRUE.equals(containerStatus.getReady());
-                if (!ready) {
-                    var terminated = containerStatus.getState().getTerminated();
-                    var exitCode = terminated != null ? terminated.getExitCode() : null;
-                    var reason = terminated != null ? terminated.getReason() : null;
-                    throw new StartPodException("container is not ready, container " + containerStatus.getName() +
-                            (exitCode != null ? ", exitCode " + exitCode : "") + (reason != null ? ", reason " + reason : ""),
-                            pod.getMetadata().getName(), status.getPhase());
-                }
+
+            var firstNotReadyContainer = getFirstNotReadyContainer(status);
+
+            if (firstNotReadyContainer != null) {
+                var terminated = firstNotReadyContainer.getState().getTerminated();
+                var exitCode = terminated != null ? terminated.getExitCode() : null;
+                var reason = terminated != null ? terminated.getReason() : null;
+                throw new StartPodException("container is not ready, container " + firstNotReadyContainer.getName() +
+                        (exitCode != null ? ", exitCode " + exitCode : "") + (reason != null ? ", reason " + reason : ""),
+                        pod.getMetadata().getName(), status.getPhase());
             }
         } catch (StartPodException se) {
             try {
@@ -979,6 +1031,10 @@ public class PodEngine<T extends Container<T>> {
 
     public void addHostPort(Integer port, Integer hostPort) {
         this.hostPorts.put(port, hostPort);
+    }
+
+    public enum Reuse {
+        NEVER, SESSION, GLOBAL;
     }
 
 }
