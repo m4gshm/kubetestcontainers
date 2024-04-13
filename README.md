@@ -1,4 +1,4 @@
-# Testcontainers on kubernetes (under construction)
+# Testcontainers on Kubernetes (under construction)
 
 A tool to run testcontainers tests in a kubernetes environment.
 
