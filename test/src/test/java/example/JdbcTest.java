@@ -36,13 +36,15 @@ public class JdbcTest {
                 statement.execute();
             }
 
-            try (var statement = connection.prepareStatement("insert into participant(id, name) values(?,?)")) {
+            try (var statement = connection.prepareStatement(
+                    "insert into participant(id, name) values(?,?)")) {
                 statement.setInt(1, 1);
                 statement.setString(2, "Alice");
                 statement.execute();
             }
 
-            try (var statement = connection.prepareStatement("select name from participant where id=?")) {
+            try (var statement = connection.prepareStatement(
+                    "select name from participant where id=?")) {
                 statement.setInt(1, 1);
                 try (var resultSet = statement.executeQuery()) {
                     Assertions.assertTrue(resultSet.next());
