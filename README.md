@@ -29,14 +29,12 @@ To run locally, it is highly recommended to use Minikube or Kind.
 package example;
 
 import io.github.m4gshm.testcontainers.PostgresqlPod;
-import lombok.SneakyThrows;
-import org.junit.Assert;
-import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.JdbcDatabaseContainer;
 
-import java.sql.DriverManager;
+import java.sql.SQLException;
 
 import static java.sql.DriverManager.getConnection;
 
@@ -50,10 +48,11 @@ public class JdbcTest {
     }
 
     @Test
-    @SneakyThrows
-    public void jdbcInsertSelectTest() {
-
-        try (var connection = getConnection(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())) {
+    public void jdbcInsertSelectTest() throws SQLException {
+        var url = postgres.getJdbcUrl();
+        var username = postgres.getUsername();
+        var password = postgres.getPassword();
+        try (var connection = getConnection(url, username, password)) {
             try (var statement = connection.prepareStatement("""
                     create table participant (
                         id integer,
@@ -73,14 +72,13 @@ public class JdbcTest {
             try (var statement = connection.prepareStatement("select name from participant where id=?")) {
                 statement.setInt(1, 1);
                 try (var resultSet = statement.executeQuery()) {
-                    Assert.assertTrue(resultSet.next());
+                    Assertions.assertTrue(resultSet.next());
                     var name = resultSet.getString(1);
-                    Assert.assertEquals("Alice", name);
+                    Assertions.assertEquals("Alice", name);
                 }
             }
 
         }
     }
-
 }
 ```

@@ -1,15 +1,11 @@
 package example;
 
 import io.github.m4gshm.testcontainers.PostgresqlPod;
-import lombok.SneakyThrows;
-import org.junit.Assert;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.JdbcDatabaseContainer;
 
-import java.sql.DriverManager;
 import java.sql.SQLException;
 
 import static java.sql.DriverManager.getConnection;
@@ -56,5 +52,4 @@ public class JdbcTest {
 
         }
     }
-
 }
