@@ -16,14 +16,16 @@ repositories {
 }
 
 dependencies {
-    testImplementation("com.github.m4gshm:kubetestcontainers:0.1-rc1")
+    testImplementation("io.github.m4gshm:kubetestcontainers:0.0.1-rc1")
     testImplementation("org.testcontainers:postgresql:1.19.0")
 }
 ```
 
 ## Usage example
 
-To run locally, it is highly recommended to use Minikube or Kind.
+To run locally, it is highly recommended to use
+[Minikube](https://minikube.sigs.k8s.io) or
+[Kind](https://kind.sigs.k8s.io).
 
 ``` java
 package example;
