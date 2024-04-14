@@ -15,8 +15,7 @@ import static java.sql.DriverManager.getConnection;
 
 public class JdbcTest {
 
-    protected static JdbcDatabaseContainer<?> postgres = new PostgresqlPod()
-            .withKubernetesClientBuilder(new KubernetesClientBuilder().withConfig(getConfig()));
+    protected static JdbcDatabaseContainer<?> postgres = new PostgresqlPod();
 
     private static Config getConfig() {
         var config = autoConfigure(null);
