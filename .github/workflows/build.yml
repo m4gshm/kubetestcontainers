@@ -29,6 +29,8 @@ jobs:
           java-version: 17
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
+      - name: config kube namespace
+        run: kubectl config set-context --current --namespace=default
       - name: Execute Gradle build
         run: ./gradlew clean :test:build -Pno-pandoc
       - name: Publish Test Report
