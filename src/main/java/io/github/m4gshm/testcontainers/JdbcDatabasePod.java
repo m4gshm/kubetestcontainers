@@ -41,9 +41,6 @@ public abstract class JdbcDatabasePod<SELF extends JdbcDatabasePod<SELF>> extend
         requireNonNull(this.podEngine, "podEngine is null");
     }
 
-    @Override
-    public abstract String getJdbcUrl();
-
     @Delegate(excludes = Excludes.class)
     public PodEngine<SELF> getPod() {
         initPodEngine();
