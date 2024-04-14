@@ -8,10 +8,14 @@ import org.testcontainers.containers.GenericContainer;
 
 import static java.util.Objects.requireNonNull;
 
+/**
+ * General purpose pod engine implementation.
+ * @param <SELF> - implementation type.
+ */
 @Slf4j
-public class GenericPod<T extends GenericPod<T>> extends GenericContainer<T> implements PodAware {
+public class GenericPod<SELF extends GenericPod<SELF>> extends GenericContainer<SELF> implements PodAware {
 
-    private PodEngine<T> podEngine;
+    private PodEngine<SELF> podEngine;
 
     public GenericPod(@NonNull String dockerImageName) {
         super(dockerImageName);
@@ -22,14 +26,14 @@ public class GenericPod<T extends GenericPod<T>> extends GenericContainer<T> imp
 
     @Delegate
     @Override
-    public PodEngine<T> getPod() {
+    public PodEngine<SELF> getPod() {
         initPodEngine();
         return podEngine;
     }
 
     private void initPodEngine() {
         if (podEngine == null) {
-            podEngine = new PodEngine<>((T) this);
+            podEngine = new PodEngine<>((SELF) this);
         }
     }
 

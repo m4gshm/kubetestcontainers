@@ -5,6 +5,10 @@ import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 
+/**
+ * {@code postgres} image based pod engine.
+ * @see org.testcontainers.containers.PostgreSQLContainer
+ */
 @Slf4j
 public class PostgresqlPod extends JdbcDatabasePod<PostgresqlPod> {
 

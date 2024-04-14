@@ -7,6 +7,9 @@ import org.testcontainers.containers.MongoDBContainer;
 
 import static java.util.Objects.requireNonNull;
 
+/**
+ * Kubernetes based extension of the {@link org.testcontainers.containers.MongoDBContainer}.
+ */
 @Slf4j
 public class MongoDBPod extends MongoDBContainer implements PodAware {
 

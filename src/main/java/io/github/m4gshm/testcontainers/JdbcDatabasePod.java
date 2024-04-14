@@ -9,16 +9,19 @@ import org.testcontainers.containers.JdbcDatabaseContainer;
 
 import static java.util.Objects.requireNonNull;
 
-@Slf4j
-public class JdbcDatabasePod<T extends JdbcDatabasePod<T>> extends JdbcDatabaseContainer<T> implements PodAware {
 
-    private PodEngine<T> podEngine;
+/**
+ * Base relation database pod engine that provides JDBC connection config.
+ *
+ * @param <SELF> - child class type.
+ */
+@Slf4j
+public abstract class JdbcDatabasePod<SELF extends JdbcDatabasePod<SELF>> extends JdbcDatabaseContainer<SELF> implements PodAware {
+
+    private PodEngine<SELF> podEngine;
     @Getter
     @Setter
     private String driverClassName;
-    @Getter
-    @Setter
-    private String jdbcUrl;
     @Getter
     @Setter
     private String username;
@@ -38,15 +41,18 @@ public class JdbcDatabasePod<T extends JdbcDatabasePod<T>> extends JdbcDatabaseC
         requireNonNull(this.podEngine, "podEngine is null");
     }
 
+    @Override
+    public abstract String getJdbcUrl();
+
     @Delegate(excludes = Excludes.class)
-    public PodEngine<T> getPod() {
+    public PodEngine<SELF> getPod() {
         initPodEngine();
         return podEngine;
     }
 
     private void initPodEngine() {
         if (podEngine == null) {
-            podEngine = new PodEngine<>((T) this);
+            podEngine = new PodEngine<>((SELF) this);
         }
     }
 
@@ -61,19 +67,19 @@ public class JdbcDatabasePod<T extends JdbcDatabasePod<T>> extends JdbcDatabaseC
     }
 
     @Override
-    public T withUsername(String username) {
+    public SELF withUsername(String username) {
         setUsername(username);
         return self();
     }
 
     @Override
-    public T withPassword(String password) {
+    public SELF withPassword(String password) {
         setPassword(password);
         return self();
     }
 
     @Override
-    public T withDatabaseName(String dbName) {
+    public SELF withDatabaseName(String dbName) {
         setDatabaseName(dbName);
         return self();
     }

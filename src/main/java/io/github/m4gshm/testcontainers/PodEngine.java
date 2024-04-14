@@ -51,6 +51,7 @@ import java.util.function.UnaryOperator;
 
 import static com.fasterxml.jackson.databind.MapperFeature.SORT_PROPERTIES_ALPHABETICALLY;
 import static com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS;
+import static io.github.m4gshm.testcontainers.DefaultPodNameGenerator.newDefaultPodNameGenerator;
 import static io.github.m4gshm.testcontainers.PodEngine.Reuse.GLOBAL;
 import static io.github.m4gshm.testcontainers.PodEngine.Reuse.SESSION;
 import static java.lang.Boolean.TRUE;
@@ -68,6 +69,11 @@ import static lombok.AccessLevel.PROTECTED;
 import static org.apache.commons.compress.archivers.tar.TarArchiveOutputStream.BIGNUMBER_POSIX;
 import static org.apache.commons.compress.archivers.tar.TarArchiveOutputStream.LONGFILE_POSIX;
 
+/**
+ * The core of Kubernetes base {@code Container} implementations.
+ *
+ * @param <T> a container type
+ */
 @Slf4j
 public class PodEngine<T extends Container<T>> {
     public static final String RUNNING = "Running";
@@ -79,11 +85,13 @@ public class PodEngine<T extends Container<T>> {
     private static final String ORG_TESTCONTAINERS_HASH = "org.testcontainers.hash";
     private static final String ORG_TESTCONTAINERS_DELETE_ON_STOP = "org.testcontainers.deleteOnStop";
     private static final String ORG_TESTCONTAINERS_SESSION_LIMITED = "org.testcontainers.sessionLimited";
-    protected final PodNameGenerator podNameGenerator;
     private final T container;
     private final Map<Transferable, String> copyToTransferableContainerPathMap = new HashMap<>();
     private final Map<String, String> labels = new HashMap<>();
     private final Map<Integer, Integer> hostPorts = new HashMap<>();
+    @Getter
+    @Setter
+    protected PodNameGenerator podNameGenerator;
     @Getter
     protected JsonMapper jsonMapper = config(new JsonMapper());
     protected KubernetesClientBuilder kubernetesClientBuilder;
@@ -133,7 +141,7 @@ public class PodEngine<T extends Container<T>> {
     }
 
     public PodEngine(@NonNull T container, String dockerImageName) {
-        this(container, dockerImageName, new DefaultPodNameGenerator());
+        this(container, dockerImageName, newDefaultPodNameGenerator());
     }
 
     public PodEngine(@NonNull T container, String dockerImageName,
@@ -210,8 +218,8 @@ public class PodEngine<T extends Container<T>> {
         return exec;
     }
 
-    private static PodResource createPod(KubernetesClient kubernetesClient, PodBuilder podBuilder) {
-        return resource(kubernetesClient, kubernetesClient.resource(podBuilder.build()).create());
+    private static PodResource createPod(KubernetesClient kubernetesClient, Pod build) {
+        return resource(kubernetesClient, kubernetesClient.resource(build).create());
     }
 
     private static PodResource resource(KubernetesClient kubernetesClient, Pod item) {
@@ -219,7 +227,7 @@ public class PodEngine<T extends Container<T>> {
     }
 
     public static boolean isRunning(Pod pod) {
-        return RUNNING.equals(pod.getStatus().getPhase());
+        return pod != null && RUNNING.equals(pod.getStatus().getPhase());
     }
 
     private static @Nullable ContainerStatus getFirstNotReadyContainer(PodStatus status) {
@@ -247,7 +255,6 @@ public class PodEngine<T extends Container<T>> {
                 ", imagePullPolicy='" + imagePullPolicy + '\'' +
                 ", startupTimeout=" + startupTimeout +
                 ", portProtocol='" + portProtocol + '\'' +
-                ", podResource=" + getPod() +
                 ", localPortForwards=" + localPortForwards +
                 ", imagePullSecretName='" + imagePullSecretName + '\'' +
                 ", podBuilderCustomizer=" + podBuilderCustomizer +
@@ -342,6 +349,12 @@ public class PodEngine<T extends Container<T>> {
         return container;
     }
 
+    public T withPodNameGenerator(PodNameGenerator podNameGenerator) {
+        this.podNameGenerator = podNameGenerator;
+        return container;
+    }
+
+
     @SneakyThrows
     public T withLocalPortForwardHost(String host) {
         return withLocalPortForwardHost(getByName(host));
@@ -420,18 +433,15 @@ public class PodEngine<T extends Container<T>> {
     }
 
     public boolean isRunning() {
-        var podResource = this.getPod();
-        return podResource != null && isRunning(podResource.get());
+        return getPod().map(PodEngine::isRunning).orElse(false);
     }
 
     public boolean isHealthy() {
-        var podResource = this.getPod();
-        return podResource != null && Set.of(PENDING, RUNNING).contains(podResource.get().getStatus().getPhase());
+        return getPod().map(pod -> Set.of(PENDING, RUNNING).contains(pod.getStatus().getPhase())).orElse(false);
     }
 
     public boolean isCreated() {
-        var podResource = this.getPod();
-        return podResource != null && !UNKNOWN.equals(podResource.get().getStatus().getPhase());
+        return getPod().map(pod -> !UNKNOWN.equals(pod.getStatus().getPhase())).orElse(false);
     }
 
     public String getContainerName() {
@@ -460,8 +470,8 @@ public class PodEngine<T extends Container<T>> {
 
     protected io.fabric8.kubernetes.api.model.Container getContainer() {
         var containerName = podContainerName;
-        return getPod().get().getSpec().getContainers().stream().filter(c -> containerName.equals(c.getName()))
-                .findFirst().orElseThrow(() -> new IllegalStateException("container '" + containerName + "' not found"));
+        return getPod().flatMap(pod -> pod.getSpec().getContainers().stream().filter(c -> containerName.equals(c.getName()))
+                .findFirst()).orElseThrow(() -> new IllegalStateException("container '" + containerName + "' not found"));
     }
 
     public String getMappedPortHost(int originalPort) {
@@ -469,7 +479,7 @@ public class PodEngine<T extends Container<T>> {
     }
 
     public String getLogs() {
-        return getPod().getLog();
+        return getPodResource().getLog();
     }
 
     public String getLogs(OutputFrame.OutputType... types) {
@@ -486,12 +496,13 @@ public class PodEngine<T extends Container<T>> {
     }
 
     public String getPodIP() {
-        return getPod().get().getStatus().getHostIP();
+        return getPod().map(pod -> pod.getStatus().getHostIP()).orElse(null);
     }
 
     public void start() {
         configure();
-        var podName = podNameGenerator.generatePodName();
+
+        var podName = podNameGenerator.generatePodName(this.container);
         this.podName = podName;
         var podBuilder = newPodBuilder(podName);
 
@@ -509,7 +520,6 @@ public class PodEngine<T extends Container<T>> {
                 .endMetadata();
 
         var kubernetesClient = kubernetesClient();
-        final PodResource podResource;
         final PodResource findPod;
         var reuse = this.reuse;
         if (reuse == SESSION) {
@@ -533,22 +543,35 @@ public class PodEngine<T extends Container<T>> {
             findPod = null;
         }
 
-        if (findPod == null) {
-            podResource = createPod(kubernetesClient, podBuilder);
+        final boolean reused;
+        if (findPod != null) {
+            var pod = findPod.get();
+            if (pod == null) {
+                reused = false;
+                log.debug("reusable pod doesn't exists, need to recreate");
+            } else {
+                reused = true;
+                var metadata = pod.getMetadata();
+                var uid = metadata.getUid();
+                var name = metadata.getName();
+                log.info("reuse first appropriated pod '{}' (uid {}), phase {}, reuse type {}",
+                        name, uid, pod.getStatus().getPhase(), reuse);
+            }
+        } else {
+            reused = false;
+        }
+
+        this.reused = reused;
+
+        final PodResource podResource;
+        if (reused) {
+            podResource = findPod;
+        } else {
+            podResource = createPod(kubernetesClient, podBuilder.build());
             if (!deletePodOnStop && reuse == SESSION) {
                 session.registerPodForDelayedDeleting(hash, podResource);
             }
-        } else {
-            reused = true;
-            podResource = findPod;
-            var pod = podResource.get();
-            var metadata = pod.getMetadata();
-            var uid = metadata.getUid();
-            var name = metadata.getName();
-            log.info("reuse first appropriated pod '{}' (uid {}), phase {}, reuse type {}",
-                    name, uid, pod.getStatus().getPhase(), reuse);
         }
-
         this.pod = podResource;
 
         var containerInfo = new InspectContainerResponse();
@@ -666,9 +689,10 @@ public class PodEngine<T extends Container<T>> {
         }
         if (!reused) {
             if (deletePodOnStop) {
-                var podResource = this.getPod();
+                var podResource = this.getPodResource();
                 if (podResource != null) {
-                    log.debug("delete pod on stop {}", podResource.get().getMetadata().getName());
+                    Pod pod = podResource.get();
+                    log.debug("delete pod on stop {}", pod != null ? pod.getMetadata().getName() : "'Not Found'");
                     podResource.delete();
                 }
             }
@@ -851,7 +875,12 @@ public class PodEngine<T extends Container<T>> {
 
     protected void waitUntilPodStarted() {
         var startTime = System.currentTimeMillis();
-        var pod = getPod().get();
+        var pod = getPodResource().get();
+
+        if (pod == null) {
+            throw new StartPodException("not found", podName, "waitUntilPodStarted");
+        }
+
         var status = pod.getStatus();
 
         while (PENDING.equals(status.getPhase())) {
@@ -879,15 +908,15 @@ public class PodEngine<T extends Container<T>> {
             try {
                 Thread.sleep(100);
             } catch (InterruptedException e) {
-                getPod().delete();
+                getPodResource().delete();
                 throw new StartPodException("interrupted", podName, phase, e);
             }
-            status = getPod().get().getStatus();
+            status = getPodResource().get().getStatus();
         }
 
         try {
             if (!RUNNING.equals(status.getPhase())) {
-                getPod().delete();
+                getPodResource().delete();
                 throw new StartPodException("unexpected pod status", pod.getMetadata().getName(), status.getPhase());
             }
 
@@ -967,7 +996,7 @@ public class PodEngine<T extends Container<T>> {
         var inetAddress = localPortForwardHost;
         var exposedPorts = getExposedPorts();
         localPortForwards = exposedPorts.stream().collect(toMap(port -> port, port -> {
-            var pod = getPod();
+            var pod = getPodResource();
             var localPortForward = inetAddress != null
                     ? pod.portForward(port, inetAddress, 0)
                     : pod.portForward(port);
@@ -1004,12 +1033,17 @@ public class PodEngine<T extends Container<T>> {
         return requireNonNull(getLocalPortForwards().get(originalPort), "Requested port (" + originalPort + ") is not mapped");
     }
 
-    protected PodResource getPod() {
+    protected PodResource getPodResource() {
         if (pod == null) {
             start();
         }
         return pod;
     }
+
+    protected Optional<Pod> getPod() {
+        return ofNullable(getPodResource().get());
+    }
+
 
     private void assertPodRunning(String funcName) {
         if (getContainerId() == null) {

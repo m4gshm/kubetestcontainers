@@ -1,5 +1,6 @@
 .gradle
 build/
 .idea/
-tests/build/
+test/build/
+test/logs*
 gradle.properties

@@ -12,8 +12,7 @@ import static java.sql.DriverManager.getConnection;
 
 public class JdbcTest {
 
-    protected static JdbcDatabaseContainer<?> postgres = new PostgresqlPod()
-            .withLocalPortForwardHost("localhost");
+    protected static JdbcDatabaseContainer<?> postgres = new PostgresqlPod();
 
     @BeforeAll
     static void beforeAll() {
