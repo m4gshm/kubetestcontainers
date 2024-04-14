@@ -61,8 +61,8 @@ public abstract class AbstractUploadAndExecBashScriptTest {
         ) {
             container.start();
             ls(container, "/scripts");
-            var execResult = container.execInContainer("sh", "-c", "cd /scripts && ./test_script.sh");
-
+            var execResult = container.execInContainer("sh", "-c",
+                    "cd /scripts && chmod u+x ./test_script.sh && ./test_script.sh");
             var exitCode = execResult.getExitCode();
             assertEquals(0, exitCode, "exitCode: " + exitCode +
                     ", err: " + execResult.getStderr().replace("\r", " "));

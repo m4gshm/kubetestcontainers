@@ -45,6 +45,4 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
-    logging.captureStandardOutput(LogLevel.ERROR)
-    logging.captureStandardError(LogLevel.ERROR)
 }
