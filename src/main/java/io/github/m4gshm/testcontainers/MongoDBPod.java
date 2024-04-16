@@ -21,21 +21,13 @@ public class MongoDBPod extends MongoDBContainer implements PodAware {
 
     public MongoDBPod(@NonNull final String dockerImageName) {
         super(dockerImageName);
-        setDockerImageName(dockerImageName);
-        requireNonNull(this.podEngine, "podEngine is null");
+        podEngine = new PodEngine<>(this, dockerImageName);
     }
 
     @Delegate
     @Override
     public PodEngine<MongoDBContainer> getPod() {
-        initPodEngine();
         return podEngine;
-    }
-
-    private void initPodEngine() {
-        if (podEngine == null) {
-            podEngine = new PodEngine<>(this);
-        }
     }
 
 }

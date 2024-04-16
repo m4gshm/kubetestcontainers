@@ -4,23 +4,30 @@ import io.fabric8.kubernetes.api.model.ContainerStatus;
 import io.fabric8.kubernetes.api.model.Pod;
 import io.fabric8.kubernetes.api.model.PodStatus;
 import io.fabric8.kubernetes.client.KubernetesClient;
+import io.fabric8.kubernetes.client.LocalPortForward;
 import io.fabric8.kubernetes.client.dsl.ExecWatch;
 import io.fabric8.kubernetes.client.dsl.PodResource;
 import io.fabric8.kubernetes.client.dsl.internal.ExecWebSocketListener;
 import io.fabric8.kubernetes.client.http.WebSocket;
 import lombok.SneakyThrows;
 import lombok.experimental.UtilityClass;
+import lombok.extern.slf4j.Slf4j;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
+import java.net.InetAddress;
+import java.util.Collection;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static java.lang.Boolean.TRUE;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.util.stream.Collectors.toMap;
 
+@Slf4j
 @UtilityClass
-public class PodEngineUtils {
+public class KubernetesUtils {
     public static final String RUNNING = "Running";
     public static final String PENDING = "Pending";
     public static final String UNKNOWN = "Unknown";
@@ -87,6 +94,34 @@ public class PodEngineUtils {
             var ready = TRUE.equals(containerStatus.getReady());
             return !ready;
         }).findFirst().orElse(null);
+    }
+
+    public static Map<Integer, LocalPortForward> startPortForward(
+            PodResource pod, InetAddress inetAddress, Collection<Integer> ports) {
+        var podName = pod.get().getMetadata().getName();
+        return ports.stream().collect(toMap(port -> port, port -> {
+            var localPortForward = inetAddress != null
+                    ? pod.portForward(port, inetAddress, 0)
+                    : pod.portForward(port);
+            var localAddress = localPortForward.getLocalAddress();
+            var localPort = localPortForward.getLocalPort();
+            if (localPortForward.errorOccurred()) {
+                var clientThrowables = localPortForward.getClientThrowables();
+                if (!clientThrowables.isEmpty()) {
+                    var throwable = clientThrowables.iterator().next();
+                    throw new StartPodException("port forward client error", podName, throwable);
+                }
+                var serverThrowables = localPortForward.getServerThrowables();
+                if (!serverThrowables.isEmpty()) {
+                    var throwable = serverThrowables.iterator().next();
+                    throw new StartPodException("port forward server error", podName, throwable);
+                }
+            } else {
+                log.info("port forward local {}:{} to remote {}:{}, ", localAddress.getHostAddress(), localPort,
+                        podName, port);
+            }
+            return localPortForward;
+        }));
     }
 
 }

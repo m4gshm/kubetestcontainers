@@ -6,17 +6,10 @@ import com.github.dockerjava.api.command.CreateContainerCmd;
 import com.github.dockerjava.api.command.InspectContainerResponse;
 import io.fabric8.kubernetes.api.model.ContainerBuilder;
 import io.fabric8.kubernetes.api.model.ContainerPort;
-import io.fabric8.kubernetes.api.model.ContainerPortBuilder;
-import io.fabric8.kubernetes.api.model.EnvVar;
 import io.fabric8.kubernetes.api.model.EnvVarBuilder;
 import io.fabric8.kubernetes.api.model.ListOptionsBuilder;
-import io.fabric8.kubernetes.api.model.LocalObjectReferenceBuilder;
-import io.fabric8.kubernetes.api.model.ObjectMetaBuilder;
 import io.fabric8.kubernetes.api.model.Pod;
 import io.fabric8.kubernetes.api.model.PodBuilder;
-import io.fabric8.kubernetes.api.model.PodSecurityContextBuilder;
-import io.fabric8.kubernetes.api.model.PodSpecBuilder;
-import io.fabric8.kubernetes.api.model.SecurityContextBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClientBuilder;
 import io.fabric8.kubernetes.client.LocalPortForward;
@@ -66,16 +59,16 @@ import static com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTR
 import static io.github.m4gshm.testcontainers.DefaultPodNameGenerator.newDefaultPodNameGenerator;
 import static io.github.m4gshm.testcontainers.PodEngine.Reuse.GLOBAL;
 import static io.github.m4gshm.testcontainers.PodEngine.Reuse.SESSION;
-import static io.github.m4gshm.testcontainers.PodEngineUtils.PENDING;
-import static io.github.m4gshm.testcontainers.PodEngineUtils.RUNNING;
-import static io.github.m4gshm.testcontainers.PodEngineUtils.UNKNOWN;
-import static io.github.m4gshm.testcontainers.PodEngineUtils.createPod;
-import static io.github.m4gshm.testcontainers.PodEngineUtils.escapeQuotes;
-import static io.github.m4gshm.testcontainers.PodEngineUtils.getError;
-import static io.github.m4gshm.testcontainers.PodEngineUtils.getFirstNotReadyContainer;
-import static io.github.m4gshm.testcontainers.PodEngineUtils.resource;
-import static io.github.m4gshm.testcontainers.PodEngineUtils.shellQuote;
-import static io.github.m4gshm.testcontainers.PodEngineUtils.waitEmptyQueue;
+import static io.github.m4gshm.testcontainers.KubernetesUtils.PENDING;
+import static io.github.m4gshm.testcontainers.KubernetesUtils.RUNNING;
+import static io.github.m4gshm.testcontainers.KubernetesUtils.UNKNOWN;
+import static io.github.m4gshm.testcontainers.KubernetesUtils.createPod;
+import static io.github.m4gshm.testcontainers.KubernetesUtils.escapeQuotes;
+import static io.github.m4gshm.testcontainers.KubernetesUtils.getError;
+import static io.github.m4gshm.testcontainers.KubernetesUtils.getFirstNotReadyContainer;
+import static io.github.m4gshm.testcontainers.KubernetesUtils.resource;
+import static io.github.m4gshm.testcontainers.KubernetesUtils.shellQuote;
+import static io.github.m4gshm.testcontainers.KubernetesUtils.waitEmptyQueue;
 import static java.lang.Boolean.getBoolean;
 import static java.lang.String.format;
 import static java.lang.reflect.Proxy.newProxyInstance;
@@ -85,7 +78,6 @@ import static java.time.Duration.ofSeconds;
 import static java.util.Objects.requireNonNull;
 import static java.util.Optional.ofNullable;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
-import static java.util.stream.Collectors.toMap;
 import static lombok.AccessLevel.PROTECTED;
 import static org.apache.commons.compress.archivers.tar.TarArchiveOutputStream.BIGNUMBER_POSIX;
 import static org.apache.commons.compress.archivers.tar.TarArchiveOutputStream.LONGFILE_POSIX;
@@ -105,8 +97,7 @@ public class PodEngine<T extends Container<T>> {
     private static final String ORG_TESTCONTAINERS_SESSION_LIMITED = "org.testcontainers.sessionLimited";
     private final T container;
     private final Map<Transferable, String> copyToTransferableContainerPathMap = new HashMap<>();
-    private final Map<String, String> labels = new HashMap<>();
-    private final Map<Integer, Integer> hostPorts = new HashMap<>();
+    private final PodBuilderFactory podBuilderFactory = new PodBuilderFactory();
     @Getter
     @Setter
     protected PodNameGenerator podNameGenerator;
@@ -115,44 +106,16 @@ public class PodEngine<T extends Container<T>> {
     protected KubernetesClientBuilder kubernetesClientBuilder;
     protected KubernetesClient kubernetesClient;
     @Getter
-    @Setter
-    protected String dockerImageName;
-    @Getter
-    protected Boolean runAsNonRoot;
-    @Getter
-    protected Long runAsUser;
-    @Getter
-    protected Long runAsGroup;
-    @Getter
-    protected Long fsGroup;
-    protected boolean privilegedMode;
-    protected boolean allowPrivilegeEscalation;
-    protected String imagePullPolicy = "Always";
-    @Getter
     protected Duration startupTimeout = ofSeconds(60);
-    @Getter
-    protected String portProtocol = "TCP";
     private PodResource pod;
     private boolean localPortForwardEnabled = true;
     private Map<Integer, LocalPortForward> localPortForwards = Map.of();
-    private boolean hostPortEnabled = false;
-    @Getter
-    private String imagePullSecretName;
-    @Getter
-    private UnaryOperator<PodBuilder> podBuilderCustomizer;
-    @Getter
-    private UnaryOperator<ContainerBuilder> containerBuilderCustomizer;
-    @Getter
-    private String podContainerName = "main";
     @Getter
     private String podName;
     private boolean deletePodOnStop = false;
     @Getter(PROTECTED)
     private boolean started;
     private InetAddress localPortForwardHost;
-    @Getter
-    @Setter(PROTECTED)
-    private List<String> entryPoint;
     @Getter
     private Reuse reuse = SESSION;
     private boolean reused;
@@ -167,9 +130,9 @@ public class PodEngine<T extends Container<T>> {
 
     public PodEngine(@NonNull T container, String dockerImageName,
                      @NonNull PodNameGenerator podNameGenerator) {
+        podBuilderFactory.setDockerImageName(dockerImageName);
         this.container = container;
         this.podNameGenerator = podNameGenerator;
-        this.dockerImageName = dockerImageName;
 
         if (container instanceof GenericContainer<?>) {
             var rawWaitStrategy = invokeContainerMethod("getWaitStrategy");
@@ -217,21 +180,29 @@ public class PodEngine<T extends Container<T>> {
     }
 
     public String toStringFields() {
-        return ", dockerImageName='" + dockerImageName + '\'' +
-                ", runAsNonRoot=" + runAsNonRoot +
-                ", runAsUser=" + runAsUser +
-                ", fsGroup=" + fsGroup +
-                ", privilegedMode=" + privilegedMode +
-                ", imagePullPolicy='" + imagePullPolicy + '\'' +
+        return ", dockerImageName='" + podBuilderFactory.getDockerImageName() + '\'' +
+                ", runAsNonRoot=" + podBuilderFactory.getRunAsNonRoot() +
+                ", runAsUser=" + podBuilderFactory.getRunAsUser() +
+                ", fsGroup=" + podBuilderFactory.getFsGroup() +
+                ", privilegedMode=" + podBuilderFactory.isPrivilegedMode() +
+                ", imagePullPolicy='" + podBuilderFactory.getImagePullPolicy() + '\'' +
                 ", startupTimeout=" + startupTimeout +
-                ", portProtocol='" + portProtocol + '\'' +
+                ", portProtocol='" + podBuilderFactory.getPortProtocol() + '\'' +
                 ", localPortForwards=" + localPortForwards +
-                ", imagePullSecretName='" + imagePullSecretName + '\'' +
-                ", podBuilderCustomizer=" + podBuilderCustomizer +
-                ", podContainerName='" + podContainerName + '\'' +
+                ", imagePullSecretName='" + podBuilderFactory.getImagePullSecretName() + '\'' +
+                ", podBuilderCustomizer=" + podBuilderFactory.getPodBuilderCustomizer() +
+                ", podContainerName='" + podBuilderFactory.getPodContainerName() + '\'' +
                 ", podName='" + podName + '\'' +
                 ", deletePodOnStop=" + deletePodOnStop +
                 ", started=" + started;
+    }
+
+    public String getDockerImageName() {
+        return podBuilderFactory.getDockerImageName();
+    }
+
+    public void setDockerImageName(String dockerImageName) {
+        podBuilderFactory.setDockerImageName(dockerImageName);
     }
 
     public DockerClient getDockerClient() {
@@ -240,11 +211,11 @@ public class PodEngine<T extends Container<T>> {
 
     public T withImagePullPolicy(ImagePullPolicy imagePullPolicy) {
         if (imagePullPolicy == null) {
-            this.imagePullPolicy = "Never";
+            podBuilderFactory.setImagePullPolicy("Never");
         } else if (imagePullPolicy.getClass().equals(PullPolicy.alwaysPull().getClass())) {
-            this.imagePullPolicy = "Always";
+            podBuilderFactory.setImagePullPolicy("Always");
         } else {
-            this.imagePullPolicy = "IfNotPresent";
+            podBuilderFactory.setImagePullPolicy("IfNotPresent");
         }
         return container;
     }
@@ -265,47 +236,47 @@ public class PodEngine<T extends Container<T>> {
     }
 
     public T withRunAsNonRoot(Boolean runAsNonRoot) {
-        this.runAsNonRoot = runAsNonRoot;
+        podBuilderFactory.setRunAsNonRoot(runAsNonRoot);
         return container;
     }
 
     public T withRunAsUser(Long runAsUser) {
-        this.runAsUser = runAsUser;
+        podBuilderFactory.setRunAsUser(runAsUser);
         return container;
     }
 
     public T withRunAsGroup(Long runAsGroup) {
-        this.runAsGroup = runAsGroup;
+        podBuilderFactory.setRunAsGroup(runAsGroup);
         return container;
     }
 
     public T withFsGroup(Long fsGroup) {
-        this.fsGroup = fsGroup;
+        podBuilderFactory.setFsGroup(fsGroup);
         return container;
     }
 
     public T withPodBuilderCustomizer(UnaryOperator<PodBuilder> podBuilderCustomizer) {
-        this.podBuilderCustomizer = podBuilderCustomizer;
+        podBuilderFactory.setPodBuilderCustomizer(podBuilderCustomizer);
         return container;
     }
 
     public T withContainerBuilderCustomizer(UnaryOperator<ContainerBuilder> podContainerBuilderCustomizer) {
-        this.containerBuilderCustomizer = podContainerBuilderCustomizer;
+        podBuilderFactory.setContainerBuilderCustomizer(podContainerBuilderCustomizer);
         return container;
     }
 
     public T withPodContainerName(String podContainerName) {
-        this.podContainerName = podContainerName;
+        podBuilderFactory.setPodContainerName(podContainerName);
         return container;
     }
 
     public T withImagePullSecretName(String imagePullSecretName) {
-        this.imagePullSecretName = imagePullSecretName;
+        podBuilderFactory.setImagePullSecretName(imagePullSecretName);
         return container;
     }
 
     public T withPortProtocol(String portProtocol) {
-        this.portProtocol = portProtocol;
+        podBuilderFactory.setPortProtocol(portProtocol);
         return container;
     }
 
@@ -342,12 +313,12 @@ public class PodEngine<T extends Container<T>> {
     }
 
     public T withPrivilegedMode(boolean privilegedMode) {
-        this.privilegedMode = privilegedMode;
+        podBuilderFactory.setPrivilegedMode(privilegedMode);
         return container;
     }
 
     public T withAllowPrivilegeEscalation(boolean allowPrivilegeEscalation) {
-        this.allowPrivilegeEscalation = allowPrivilegeEscalation;
+        podBuilderFactory.setAllowPrivilegeEscalation(allowPrivilegeEscalation);
         return container;
     }
 
@@ -391,9 +362,9 @@ public class PodEngine<T extends Container<T>> {
                 case "withEntrypoint" -> {
                     var firstArg = args[0];
                     if (firstArg instanceof String[] strings) {
-                        this.entryPoint = List.of(strings);
+                        podBuilderFactory.setEntryPoint(List.of(strings));
                     } else if (firstArg instanceof List<?> list) {
-                        this.entryPoint = list.stream().map(String::valueOf).toList();
+                        podBuilderFactory.setEntryPoint(list.stream().map(String::valueOf).toList());
                     }
                     yield null;
                 }
@@ -403,7 +374,7 @@ public class PodEngine<T extends Container<T>> {
     }
 
     public boolean isRunning() {
-        return getPod().map(PodEngineUtils::isRunning).orElse(false);
+        return getPod().map(KubernetesUtils::isRunning).orElse(false);
     }
 
     public boolean isHealthy() {
@@ -439,7 +410,7 @@ public class PodEngine<T extends Container<T>> {
     }
 
     protected io.fabric8.kubernetes.api.model.Container getContainer() {
-        var containerName = podContainerName;
+        var containerName = podBuilderFactory.getPodContainerName();
         return getPod().flatMap(pod -> pod.getSpec().getContainers().stream().filter(c -> containerName.equals(c.getName()))
                 .findFirst()).orElseThrow(() -> new IllegalStateException("container '" + containerName + "' not found"));
     }
@@ -472,9 +443,13 @@ public class PodEngine<T extends Container<T>> {
     public void start() {
         configure();
 
-        var podName = podNameGenerator.generatePodName(this.container);
+        var podName = podNameGenerator.generatePodName(getDockerImageName());
         this.podName = podName;
-        var podBuilder = newPodBuilder(podName);
+
+        podBuilderFactory.setArgs(container.getCommandParts());
+        podBuilderFactory.setVars(container.getEnvMap().entrySet().stream().map(e ->
+                new EnvVarBuilder().withName(e.getKey()).withValue(e.getValue()).build()).toList());
+        var podBuilder = podBuilderFactory.newPodBuilder();
 
         var hash = hash(podBuilder.build());
         var session = Session.instance();
@@ -501,7 +476,7 @@ public class PodEngine<T extends Container<T>> {
                                 var labels = p.getMetadata().getLabels();
                                 var deleteOnStop = getBoolean(labels.get(ORG_TESTCONTAINERS_DELETE_ON_STOP));
                                 var sessionLimited = getBoolean(labels.get(ORG_TESTCONTAINERS_SESSION_LIMITED));
-                                return PodEngineUtils.isRunning(p)
+                                return KubernetesUtils.isRunning(p)
                                         && hash.equals(labels.get(ORG_TESTCONTAINERS_HASH))
                                         && !(deleteOnStop || sessionLimited)
                                         && getFirstNotReadyContainer(p.getStatus()) == null;
@@ -560,76 +535,6 @@ public class PodEngine<T extends Container<T>> {
 
         //todo fill containerInfo
         containerIsStarted(containerInfo, false);
-    }
-
-    protected PodBuilder newPodBuilder(String podName) {
-        var containerBuilder = new ContainerBuilder()
-                .withImagePullPolicy(imagePullPolicy)
-                .withImage(getDockerImageName())
-                .withSecurityContext(new SecurityContextBuilder()
-                        .withRunAsNonRoot(runAsNonRoot)
-                        .withRunAsUser(runAsUser)
-                        .withRunAsGroup(runAsGroup)
-                        .withPrivileged(privilegedMode)
-                        .withAllowPrivilegeEscalation(allowPrivilegeEscalation)
-                        .build())
-                .withName(podContainerName)
-                .withArgs(getArgs())
-                .withCommand(entryPoint)
-                .withPorts(getContainerPorts())
-                .withEnv(getVars());
-        if (containerBuilderCustomizer != null) {
-            containerBuilder = containerBuilderCustomizer.apply(containerBuilder);
-        }
-
-        var podBuilder = new PodBuilder()
-                .withMetadata(new ObjectMetaBuilder()
-//                        .withName(podName)
-                        .addToLabels(labels)
-                        .addToLabels(Map.of(
-                                ORG_TESTCONTAINERS_TYPE, KUBECONTAINERS//,
-//                                ORG_TESTCONTAINERS_NAME, podName
-                        ))
-                        .build())
-                .withSpec(new PodSpecBuilder()
-                        .withSecurityContext(new PodSecurityContextBuilder()
-                                .withRunAsNonRoot(runAsNonRoot)
-                                .withRunAsUser(runAsUser)
-                                .withFsGroup(fsGroup)
-                                .build())
-                        .withImagePullSecrets(new LocalObjectReferenceBuilder()
-                                .withName(imagePullSecretName)
-                                .build())
-                        .withContainers(containerBuilder.build())
-                        .build());
-
-        if (podBuilderCustomizer != null) {
-            podBuilder = podBuilderCustomizer.apply(podBuilder);
-        }
-        return podBuilder;
-    }
-
-    @NotNull
-    protected List<ContainerPort> getContainerPorts() {
-        return getExposedPorts().stream().map(port -> {
-            var portBuilder = new ContainerPortBuilder()
-                    .withContainerPort(port)
-                    .withProtocol(portProtocol);
-            if (hostPortEnabled) {
-                portBuilder.withHostPort(hostPorts.get(port));
-            }
-            return portBuilder.build();
-        }).toList();
-    }
-
-    @NotNull
-    private List<EnvVar> getVars() {
-        return container.getEnvMap().entrySet().stream().map(e ->
-                new EnvVarBuilder().withName(e.getKey()).withValue(e.getValue()).build()).toList();
-    }
-
-    private String[] getArgs() {
-        return container.getCommandParts();
     }
 
     protected KubernetesClient kubernetesClient() {
@@ -839,7 +744,7 @@ public class PodEngine<T extends Container<T>> {
         if (key.startsWith("org.testcontainers")) {
             throw new IllegalArgumentException("The org.testcontainers namespace is reserved for interal use");
         }
-        labels.put(key, value);
+        podBuilderFactory.getLabels().put(key, value);
         return container;
     }
 
@@ -963,35 +868,10 @@ public class PodEngine<T extends Container<T>> {
     }
 
     protected void startPortForward() {
-        var inetAddress = localPortForwardHost;
-        var exposedPorts = getExposedPorts();
-        localPortForwards = exposedPorts.stream().collect(toMap(port -> port, port -> {
-            var pod = getPodResource();
-            var localPortForward = inetAddress != null
-                    ? pod.portForward(port, inetAddress, 0)
-                    : pod.portForward(port);
-            var localAddress = localPortForward.getLocalAddress();
-            var localPort = localPortForward.getLocalPort();
-            if (localPortForward.errorOccurred()) {
-                var clientThrowables = localPortForward.getClientThrowables();
-                if (!clientThrowables.isEmpty()) {
-                    var throwable = clientThrowables.iterator().next();
-                    throw new StartPodException("port forward client error", podName, throwable);
-                }
-                var serverThrowables = localPortForward.getServerThrowables();
-                if (!serverThrowables.isEmpty()) {
-                    var throwable = serverThrowables.iterator().next();
-                    throw new StartPodException("port forward server error", podName, throwable);
-                }
-            } else {
-                log.info("port forward local {}:{} to remote {}.{}:{}, ", localAddress.getHostAddress(), localPort,
-                        podName, podContainerName, port);
-            }
-            return localPortForward;
-        }));
+        localPortForwards = KubernetesUtils.startPortForward(getPodResource(), localPortForwardHost, getExposedPorts());
     }
 
-    private List<Integer> getExposedPorts() {
+    protected List<Integer> getExposedPorts() {
         return container.getExposedPorts();
     }
 
@@ -1014,7 +894,6 @@ public class PodEngine<T extends Container<T>> {
         return ofNullable(getPodResource().get());
     }
 
-
     private void assertPodRunning(String funcName) {
         if (getContainerId() == null) {
             throw new IllegalStateException(funcName + " can only be used with running pod");
@@ -1022,7 +901,7 @@ public class PodEngine<T extends Container<T>> {
     }
 
     public void addHostPort(Integer port, Integer hostPort) {
-        this.hostPorts.put(port, hostPort);
+        podBuilderFactory.addHostPort(port, hostPort);
     }
 
     public enum Reuse {

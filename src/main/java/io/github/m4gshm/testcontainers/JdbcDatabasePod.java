@@ -7,8 +7,6 @@ import lombok.experimental.Delegate;
 import lombok.extern.slf4j.Slf4j;
 import org.testcontainers.containers.JdbcDatabaseContainer;
 
-import static java.util.Objects.requireNonNull;
-
 
 /**
  * Base relation database pod engine that provides JDBC connection config.
@@ -37,25 +35,17 @@ public abstract class JdbcDatabasePod<SELF extends JdbcDatabasePod<SELF>> extend
 
     public JdbcDatabasePod(@NonNull String dockerImageName) {
         super(dockerImageName);
-        setDockerImageName(dockerImageName);
-        requireNonNull(this.podEngine, "podEngine is null");
+        podEngine = new PodEngine<>((SELF) this, dockerImageName);
     }
 
     @Delegate(excludes = Excludes.class)
     public PodEngine<SELF> getPod() {
-        initPodEngine();
         return podEngine;
-    }
-
-    private void initPodEngine() {
-        if (podEngine == null) {
-            podEngine = new PodEngine<>((SELF) this);
-        }
     }
 
     @Override
     public void start() {
-        getPod().start();
+        podEngine.start();
     }
 
     @Override

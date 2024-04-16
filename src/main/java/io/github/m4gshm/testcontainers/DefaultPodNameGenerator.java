@@ -1,7 +1,7 @@
 package io.github.m4gshm.testcontainers;
 
+import lombok.NonNull;
 import lombok.RequiredArgsConstructor;
-import org.testcontainers.containers.Container;
 
 import java.security.SecureRandom;
 
@@ -24,17 +24,16 @@ public class DefaultPodNameGenerator implements PodNameGenerator {
         return new DefaultPodNameGenerator(new SecureRandom(), "testcontainer-", useImageNamePrefix);
     }
 
-    private static String imageNamePrefix(Container<?> container) {
-        var dockerImageName = container.getDockerImageName();
+    private static String imageNamePrefix(@NonNull String dockerImageName) {
         var parts = dockerImageName.split(":");
         var prefix = parts.length > 0 ? parts[0] : "";
         return !prefix.isEmpty() ? prefix + "-" : "";
     }
 
     @Override
-    public String generatePodName(Container<?> container) {
+    public String generatePodName(@NonNull String dockerImageName) {
         var maxNameLength = 63;
-        var prefix = this.prefix + imageNamePrefix(container);
+        var prefix = this.prefix + imageNamePrefix(dockerImageName);
         var reminds = maxNameLength - prefix.length();
         var bytes = new byte[reminds / 2];
         random.nextBytes(bytes);
