@@ -19,6 +19,7 @@ public class GenericPod<SELF extends GenericPod<SELF>> extends GenericContainer<
 
     public GenericPod(@NonNull String dockerImageName) {
         super(dockerImageName);
+        setDockerImageName(dockerImageName);
         var podEngine = this.podEngine;
         requireNonNull(podEngine, "podEngine is null");
         waitStrategy = new PodPortWaitStrategy();

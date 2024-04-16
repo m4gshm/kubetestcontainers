@@ -4,6 +4,8 @@ A tool to run testcontainers tests in a kubernetes environment.
 
 Requires Java 17 or higher.
 
+Compatibility with Testcontainers 1.19.7.
+
 ## Install
 
 ### Gradle (Kotlin syntax)
@@ -30,6 +32,8 @@ To run locally, it is highly recommended to use
 ``` java
 package example;
 
+import io.fabric8.kubernetes.client.Config;
+import io.fabric8.kubernetes.client.KubernetesClientBuilder;
 import io.github.m4gshm.testcontainers.PostgresqlPod;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
@@ -38,12 +42,18 @@ import org.testcontainers.containers.JdbcDatabaseContainer;
 
 import java.sql.SQLException;
 
+import static io.fabric8.kubernetes.client.Config.autoConfigure;
 import static java.sql.DriverManager.getConnection;
 
 public class JdbcTest {
 
-    protected static JdbcDatabaseContainer<?> postgres = new PostgresqlPod()
-            .withLocalPortForwardHost("localhost");
+    protected static JdbcDatabaseContainer<?> postgres = new PostgresqlPod();
+
+    private static Config getConfig() {
+        var config = autoConfigure(null);
+        config.setDefaultNamespace(true);
+        return config;
+    }
 
     @BeforeAll
     static void beforeAll() {

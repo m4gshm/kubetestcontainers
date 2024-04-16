@@ -19,9 +19,9 @@ dependencies {
     testAnnotationProcessor("org.projectlombok:lombok:1.18.30")
 
     implementation("org.testcontainers:testcontainers:1.19.1")
-    compileOnly("org.testcontainers:jdbc:1.19.1")
-    compileOnly("org.testcontainers:postgresql:1.19.1")
-    compileOnly("org.testcontainers:mongodb:1.19.0")
+    compileOnly("org.testcontainers:jdbc:1.19.7")
+    compileOnly("org.testcontainers:postgresql:1.19.7")
+    compileOnly("org.testcontainers:mongodb:1.19.7")
 
     implementation("io.fabric8:kubernetes-client:6.8.1")
     implementation("commons-codec:commons-codec:1.16.0")
@@ -39,7 +39,7 @@ tasks.test {
 
 java {
     withSourcesJar()
-    withJavadocJar()
+//    withJavadocJar()
     targetCompatibility = JavaVersion.VERSION_17
     sourceCompatibility = JavaVersion.VERSION_17
     modularity.inferModulePath.set(true)
@@ -102,10 +102,10 @@ publishing {
     }
 }
 
-signing {
-    val extension = extensions.getByName("publishing") as PublishingExtension
-    sign(extension.publications)
-}
+//signing {
+//    val extension = extensions.getByName("publishing") as PublishingExtension
+//    sign(extension.publications)
+//}
 
 nmcp {
     publishAllProjectsProbablyBreakingProjectIsolation {

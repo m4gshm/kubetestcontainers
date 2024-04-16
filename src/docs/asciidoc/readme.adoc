@@ -6,6 +6,8 @@ A tool to run testcontainers tests in a kubernetes environment.
 
 Requires Java 17 or higher.
 
+Compatibility with Testcontainers 1.19.7.
+
 === Install
 ==== Gradle (Kotlin  syntax)
 Add the code below to your `build.gradle.kts`

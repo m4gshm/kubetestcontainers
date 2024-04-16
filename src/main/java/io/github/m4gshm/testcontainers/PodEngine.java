@@ -4,16 +4,25 @@ import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.command.CreateContainerCmd;
 import com.github.dockerjava.api.command.InspectContainerResponse;
-import io.fabric8.kubernetes.api.model.*;
+import io.fabric8.kubernetes.api.model.ContainerBuilder;
+import io.fabric8.kubernetes.api.model.ContainerPort;
+import io.fabric8.kubernetes.api.model.ContainerPortBuilder;
+import io.fabric8.kubernetes.api.model.EnvVar;
+import io.fabric8.kubernetes.api.model.EnvVarBuilder;
+import io.fabric8.kubernetes.api.model.ListOptionsBuilder;
+import io.fabric8.kubernetes.api.model.LocalObjectReferenceBuilder;
+import io.fabric8.kubernetes.api.model.ObjectMetaBuilder;
+import io.fabric8.kubernetes.api.model.Pod;
+import io.fabric8.kubernetes.api.model.PodBuilder;
+import io.fabric8.kubernetes.api.model.PodSecurityContextBuilder;
+import io.fabric8.kubernetes.api.model.PodSpecBuilder;
+import io.fabric8.kubernetes.api.model.SecurityContextBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClientBuilder;
 import io.fabric8.kubernetes.client.LocalPortForward;
 import io.fabric8.kubernetes.client.RequestConfig;
-import io.fabric8.kubernetes.client.dsl.ExecWatch;
 import io.fabric8.kubernetes.client.dsl.PodResource;
-import io.fabric8.kubernetes.client.dsl.internal.ExecWebSocketListener;
 import io.fabric8.kubernetes.client.dsl.internal.OperationSupport;
-import io.fabric8.kubernetes.client.http.WebSocket;
 import io.github.m4gshm.testcontainers.wait.PodLogMessageWaitStrategy;
 import io.github.m4gshm.testcontainers.wait.PodPortWaitStrategy;
 import lombok.Getter;
@@ -23,7 +32,6 @@ import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 import org.testcontainers.containers.Container;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.output.OutputFrame;
@@ -44,8 +52,12 @@ import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.nio.charset.Charset;
 import java.time.Duration;
-import java.util.*;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.Base64;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
 
@@ -54,7 +66,16 @@ import static com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTR
 import static io.github.m4gshm.testcontainers.DefaultPodNameGenerator.newDefaultPodNameGenerator;
 import static io.github.m4gshm.testcontainers.PodEngine.Reuse.GLOBAL;
 import static io.github.m4gshm.testcontainers.PodEngine.Reuse.SESSION;
-import static java.lang.Boolean.TRUE;
+import static io.github.m4gshm.testcontainers.PodEngineUtils.PENDING;
+import static io.github.m4gshm.testcontainers.PodEngineUtils.RUNNING;
+import static io.github.m4gshm.testcontainers.PodEngineUtils.UNKNOWN;
+import static io.github.m4gshm.testcontainers.PodEngineUtils.createPod;
+import static io.github.m4gshm.testcontainers.PodEngineUtils.escapeQuotes;
+import static io.github.m4gshm.testcontainers.PodEngineUtils.getError;
+import static io.github.m4gshm.testcontainers.PodEngineUtils.getFirstNotReadyContainer;
+import static io.github.m4gshm.testcontainers.PodEngineUtils.resource;
+import static io.github.m4gshm.testcontainers.PodEngineUtils.shellQuote;
+import static io.github.m4gshm.testcontainers.PodEngineUtils.waitEmptyQueue;
 import static java.lang.Boolean.getBoolean;
 import static java.lang.String.format;
 import static java.lang.reflect.Proxy.newProxyInstance;
@@ -76,9 +97,6 @@ import static org.apache.commons.compress.archivers.tar.TarArchiveOutputStream.L
  */
 @Slf4j
 public class PodEngine<T extends Container<T>> {
-    public static final String RUNNING = "Running";
-    public static final String PENDING = "Pending";
-    public static final String UNKNOWN = "Unknown";
     public static final String ORG_TESTCONTAINERS_TYPE = "org.testcontainers.type";
     public static final String ORG_TESTCONTAINERS_NAME = "org.testcontainers.name";
     public static final String KUBECONTAINERS = "kubecontainers";
@@ -126,11 +144,14 @@ public class PodEngine<T extends Container<T>> {
     private UnaryOperator<ContainerBuilder> containerBuilderCustomizer;
     @Getter
     private String podContainerName = "main";
+    @Getter
     private String podName;
     private boolean deletePodOnStop = false;
     @Getter(PROTECTED)
     private boolean started;
     private InetAddress localPortForwardHost;
+    @Getter
+    @Setter(PROTECTED)
     private List<String> entryPoint;
     @Getter
     private Reuse reuse = SESSION;
@@ -149,6 +170,12 @@ public class PodEngine<T extends Container<T>> {
         this.container = container;
         this.podNameGenerator = podNameGenerator;
         this.dockerImageName = dockerImageName;
+
+        if (container instanceof GenericContainer<?>) {
+            var rawWaitStrategy = invokeContainerMethod("getWaitStrategy");
+            var replacePodWaiters = replacePodWaiters((WaitStrategy) rawWaitStrategy);
+            setFieldValue(GenericContainer.class, container, "waitStrategy", replacePodWaiters);
+        }
     }
 
     private static JsonMapper config(JsonMapper jsonMapper) {
@@ -159,82 +186,25 @@ public class PodEngine<T extends Container<T>> {
     }
 
     @SneakyThrows
-    private static <T> T getFieldValue(Object object, String fieldName) {
-        var regExField = object.getClass().getDeclaredField(fieldName);
+    private static <T> T getFieldValue(Class<?> type, Object object, String fieldName) {
+        var regExField = type.getDeclaredField(fieldName);
         regExField.setAccessible(true);
         return (T) regExField.get(object);
     }
 
+    @SneakyThrows
+    private static void setFieldValue(Class<?> type, Object object, String fieldName, Object value) {
+        var regExField = type.getDeclaredField(fieldName);
+        regExField.setAccessible(true);
+        regExField.set(object, value);
+    }
+
     private static WaitStrategy replacePodWaiters(@NotNull WaitStrategy waitStrategy) {
         return waitStrategy instanceof LogMessageWaitStrategy
-                ? new PodLogMessageWaitStrategy(getFieldValue(waitStrategy, "regEx"))
+                ? new PodLogMessageWaitStrategy(getFieldValue(waitStrategy.getClass(), waitStrategy, "regEx"))
                 : waitStrategy instanceof HostPortWaitStrategy
-                ? new PodPortWaitStrategy(getFieldValue(waitStrategy, "ports"))
+                ? new PodPortWaitStrategy(getFieldValue(waitStrategy.getClass(), waitStrategy, "ports"))
                 : waitStrategy;
-    }
-
-    private static String getError(ExecWatch exec) {
-        try {
-            return new String(exec.getError().readAllBytes(), UTF_8);
-        } catch (IOException e) {
-            return "";
-        }
-    }
-
-    @NotNull
-    private static String getOut(ExecWatch exec) {
-        try {
-            return new String(exec.getOutput().readAllBytes(), UTF_8);
-        } catch (IOException e) {
-            return "";
-        }
-    }
-
-    static String createExecCommandForUpload(String file) {
-        String directoryTrimmedFromFilePath = file.substring(0, file.lastIndexOf('/'));
-        final String directory = directoryTrimmedFromFilePath.isEmpty() ? "/" : directoryTrimmedFromFilePath;
-        return String.format("cat - > %s", shellQuote(file));
-    }
-
-    public static String shellQuote(String value) {
-        return "'" + escapeQuotes(value) + "'";
-    }
-
-    public static String escapeQuotes(String value) {
-        return value.replace("'", "'\\''");
-    }
-
-    @SneakyThrows
-    private static ExecWatch waitEmptyQueue(ExecWatch exec) {
-        var webSocketRefFld = ExecWebSocketListener.class.getDeclaredField("webSocketRef");
-        webSocketRefFld.setAccessible(true);
-        var webSocketRef = (AtomicReference<WebSocket>) webSocketRefFld.get(exec);
-        var webSocket = webSocketRef.get();
-        var inQueue = webSocket.queueSize();
-        while (inQueue > 0) {
-            Thread.yield();
-            inQueue = webSocket.queueSize();
-        }
-        return exec;
-    }
-
-    private static PodResource createPod(KubernetesClient kubernetesClient, Pod build) {
-        return resource(kubernetesClient, kubernetesClient.resource(build).create());
-    }
-
-    private static PodResource resource(KubernetesClient kubernetesClient, Pod item) {
-        return kubernetesClient.pods().resource(item);
-    }
-
-    public static boolean isRunning(Pod pod) {
-        return pod != null && RUNNING.equals(pod.getStatus().getPhase());
-    }
-
-    private static @Nullable ContainerStatus getFirstNotReadyContainer(PodStatus status) {
-        return status.getContainerStatuses().stream().filter(containerStatus -> {
-            var ready = TRUE.equals(containerStatus.getReady());
-            return !ready;
-        }).findFirst().orElse(null);
     }
 
     private int getRequestTimeout() {
@@ -243,7 +213,7 @@ public class PodEngine<T extends Container<T>> {
 
     @Override
     public String toString() {
-        return "PodEngine{" + toStringFields() + '}';
+        return getClass().getSimpleName() + "{" + toStringFields() + '}';
     }
 
     public String toStringFields() {
@@ -433,7 +403,7 @@ public class PodEngine<T extends Container<T>> {
     }
 
     public boolean isRunning() {
-        return getPod().map(PodEngine::isRunning).orElse(false);
+        return getPod().map(PodEngineUtils::isRunning).orElse(false);
     }
 
     public boolean isHealthy() {
@@ -531,7 +501,7 @@ public class PodEngine<T extends Container<T>> {
                                 var labels = p.getMetadata().getLabels();
                                 var deleteOnStop = getBoolean(labels.get(ORG_TESTCONTAINERS_DELETE_ON_STOP));
                                 var sessionLimited = getBoolean(labels.get(ORG_TESTCONTAINERS_SESSION_LIMITED));
-                                return isRunning(p)
+                                return PodEngineUtils.isRunning(p)
                                         && hash.equals(labels.get(ORG_TESTCONTAINERS_HASH))
                                         && !(deleteOnStop || sessionLimited)
                                         && getFirstNotReadyContainer(p.getStatus()) == null;
@@ -971,11 +941,11 @@ public class PodEngine<T extends Container<T>> {
     }
 
     @SneakyThrows
-    private void invokeContainerMethod(String name) {
+    private Object invokeContainerMethod(String name) {
         if (container instanceof GenericContainer<?>) {
             var method = GenericContainer.class.getDeclaredMethod(name);
             method.setAccessible(true);
-            method.invoke(container);
+            return method.invoke(container);
         } else {
             throw new IllegalStateException("no method '" + name + "' in container " + container.getClass());
         }
