@@ -15,16 +15,16 @@ import org.testcontainers.containers.GenericContainer;
 public class GenericPod<SELF extends GenericPod<SELF>> extends GenericContainer<SELF> implements PodAware {
 
     @Delegate
-    private final PodEngine<SELF> podEngine;
+    private final PodContainerDelegate<SELF> podEngine;
 
     public GenericPod(@NonNull String dockerImageName) {
         super(dockerImageName);
-        podEngine = new PodEngine<>((SELF) this, dockerImageName);
+        podEngine = new PodContainerDelegate<>((SELF) this, dockerImageName);
         waitStrategy = new PodPortWaitStrategy();
     }
 
     @Override
-    public PodEngine<SELF> getPod() {
+    public PodContainerDelegate<SELF> getPod() {
         return podEngine;
     }
 

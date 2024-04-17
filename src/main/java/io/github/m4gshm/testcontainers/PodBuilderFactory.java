@@ -67,9 +67,6 @@ public class PodBuilderFactory {
         var podBuilder = new PodBuilder()
                 .withMetadata(new ObjectMetaBuilder()
                         .addToLabels(getLabels())
-                        .addToLabels(Map.of(
-                                PodEngine.ORG_TESTCONTAINERS_TYPE, PodEngine.KUBECONTAINERS
-                        ))
                         .build())
                 .withSpec(new PodSpecBuilder()
                         .withSecurityContext(new PodSecurityContextBuilder()
@@ -91,7 +88,7 @@ public class PodBuilderFactory {
 
     @NotNull
     protected List<ContainerPort> getContainerPorts() {
-        return exposedPorts.stream().map(port -> {
+        return getExposedPorts().stream().map(port -> {
             var portBuilder = new ContainerPortBuilder()
                     .withContainerPort(port)
                     .withProtocol(getPortProtocol());
@@ -106,4 +103,7 @@ public class PodBuilderFactory {
         getHostPorts().put(port, hostPort);
     }
 
+    public void addLabel(String label, String value) {
+        getLabels().put(label, value);
+    }
 }

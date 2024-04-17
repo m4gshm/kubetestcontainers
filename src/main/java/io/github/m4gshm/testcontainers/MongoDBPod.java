@@ -13,7 +13,7 @@ import static java.util.Objects.requireNonNull;
 @Slf4j
 public class MongoDBPod extends MongoDBContainer implements PodAware {
 
-    private PodEngine<MongoDBContainer> podEngine;
+    private PodContainerDelegate<MongoDBContainer> podEngine;
 
     public MongoDBPod() {
         this("mongo:4.0.10");
@@ -21,12 +21,12 @@ public class MongoDBPod extends MongoDBContainer implements PodAware {
 
     public MongoDBPod(@NonNull final String dockerImageName) {
         super(dockerImageName);
-        podEngine = new PodEngine<>(this, dockerImageName);
+        podEngine = new PodContainerDelegate<>(this, dockerImageName);
     }
 
     @Delegate
     @Override
-    public PodEngine<MongoDBContainer> getPod() {
+    public PodContainerDelegate<MongoDBContainer> getPod() {
         return podEngine;
     }
 

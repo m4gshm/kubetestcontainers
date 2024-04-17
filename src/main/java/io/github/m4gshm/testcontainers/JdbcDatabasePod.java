@@ -16,7 +16,7 @@ import org.testcontainers.containers.JdbcDatabaseContainer;
 @Slf4j
 public abstract class JdbcDatabasePod<SELF extends JdbcDatabasePod<SELF>> extends JdbcDatabaseContainer<SELF> implements PodAware {
 
-    private PodEngine<SELF> podEngine;
+    private PodContainerDelegate<SELF> podEngine;
     @Getter
     @Setter
     private String driverClassName;
@@ -35,11 +35,11 @@ public abstract class JdbcDatabasePod<SELF extends JdbcDatabasePod<SELF>> extend
 
     public JdbcDatabasePod(@NonNull String dockerImageName) {
         super(dockerImageName);
-        podEngine = new PodEngine<>((SELF) this, dockerImageName);
+        podEngine = new PodContainerDelegate<>((SELF) this, dockerImageName);
     }
 
     @Delegate(excludes = Excludes.class)
-    public PodEngine<SELF> getPod() {
+    public PodContainerDelegate<SELF> getPod() {
         return podEngine;
     }
 
