@@ -9,17 +9,13 @@ import io.fabric8.kubernetes.api.model.Pod;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClientBuilder;
 import io.fabric8.kubernetes.client.LocalPortForward;
-import io.fabric8.kubernetes.client.RequestConfig;
 import io.fabric8.kubernetes.client.dsl.PodResource;
-import io.fabric8.kubernetes.client.dsl.internal.OperationSupport;
 import lombok.Getter;
 import lombok.NonNull;
 import lombok.Setter;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
-import org.jetbrains.annotations.NotNull;
-import org.testcontainers.containers.Container;
 import org.testcontainers.containers.output.OutputFrame;
 import org.testcontainers.images.builder.Transferable;
 import org.testcontainers.shaded.com.google.common.hash.Hashing;
@@ -30,9 +26,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.Inet6Address;
 import java.net.InetAddress;
-import java.nio.charset.Charset;
 import java.time.Duration;
-import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -46,10 +40,10 @@ import static io.github.m4gshm.testcontainers.KubernetesUtils.RUNNING;
 import static io.github.m4gshm.testcontainers.KubernetesUtils.UNKNOWN;
 import static io.github.m4gshm.testcontainers.KubernetesUtils.createPod;
 import static io.github.m4gshm.testcontainers.KubernetesUtils.escapeQuotes;
-import static io.github.m4gshm.testcontainers.KubernetesUtils.getError;
 import static io.github.m4gshm.testcontainers.KubernetesUtils.getFirstNotReadyContainer;
 import static io.github.m4gshm.testcontainers.KubernetesUtils.resource;
 import static io.github.m4gshm.testcontainers.KubernetesUtils.shellQuote;
+import static io.github.m4gshm.testcontainers.KubernetesUtils.uploadStdIn;
 import static io.github.m4gshm.testcontainers.KubernetesUtils.waitEmptyQueue;
 import static io.github.m4gshm.testcontainers.PodContainerUtils.config;
 import static java.lang.Boolean.getBoolean;
@@ -223,7 +217,7 @@ public abstract class AbstractPod {
 
     protected abstract void containerIsStarted(InspectContainerResponse containerInfo, boolean reused);
 
-    protected abstract @NotNull List<EnvVar> getEnvVars();
+    protected abstract List<EnvVar> getEnvVars();
 
     protected abstract String[] getCommandParts();
 
@@ -266,16 +260,19 @@ public abstract class AbstractPod {
 
     @SneakyThrows
     public void uploadTmpTar(byte[] payload) {
+        var podName = this.podName;
+        var podResource = pod;
+
         var tmpDir = "/tmp";
-        var tarName = tmpDir + "/" + this.podName + ".tar";
+        var tarName = tmpDir + "/" + podName + ".tar";
         log.debug("tar uploading {}", tarName);
 
         var escapedTarPath = escapeQuotes(tarName);
-        try (var exec = pod.terminateOnError().exec("touch", escapedTarPath)) {
+        try (var exec = podResource.terminateOnError().exec("touch", escapedTarPath)) {
             waitEmptyQueue(exec);
         }
 
-        uploadStdIn(payload, escapedTarPath);
+        uploadStdIn(pod, getRequestTimeout(), escapedTarPath, payload);
 //        uploadBase64(payload, escapedTarPath);
 
         var unpackDir = "/";
@@ -284,7 +281,7 @@ public abstract class AbstractPod {
 
         var out = new ByteArrayOutputStream();
         var err = new ByteArrayOutputStream();
-        try (var exec = pod.redirectingInput().writingOutput(out).writingError(err).exec("sh", "-c", extractTarCmd)) {
+        try (var exec = podResource.redirectingInput().writingOutput(out).writingError(err).exec("sh", "-c", extractTarCmd)) {
             waitEmptyQueue(exec);
             var exitedCode = exec.exitCode();
             var exitCode = exitedCode.get(getRequestTimeout(), MILLISECONDS);
@@ -298,40 +295,6 @@ public abstract class AbstractPod {
             } else {
                 log.debug("upload tar -> {}", out.toString(UTF_8));
             }
-        }
-    }
-
-    @SneakyThrows
-    private void uploadStdIn(byte[] payload, String escapedTarPath) {
-        try (var exec = pod.redirectingInput().terminateOnError().exec("cp", "/dev/stdin", escapedTarPath)) {
-            var input = exec.getInput();
-            input.write(payload);
-            input.flush();
-            waitEmptyQueue(exec);
-            checkSize(escapedTarPath, payload.length);
-        }
-    }
-
-    @SneakyThrows
-    protected void checkSize(String filePath, long expected) {
-        var size = getSize(filePath);
-        if (size != expected) {
-            Thread.sleep(100);
-            size = getSize(filePath);
-        }
-        if (size != expected) {
-            throw new UploadFileException("Unexpected file size " + size + ", expected " + expected + ", file '" + filePath + "'");
-        }
-    }
-
-    @SneakyThrows
-    private long getSize(String filePath) {
-        var byteCount = new ByteArrayOutputStream();
-        try (var exec = pod.writingOutput(byteCount).terminateOnError().exec("sh", "-c", "wc -c < " + filePath)) {
-            var exitCode = exec.exitCode().get(getRequestTimeout(), MILLISECONDS);
-            var remoteSizeRaw = byteCount.toString(UTF_8).trim();
-            waitEmptyQueue(exec);
-            return Integer.parseInt(remoteSizeRaw);
         }
     }
 
@@ -381,7 +344,6 @@ public abstract class AbstractPod {
                 getPodResource().delete();
                 throw new StartPodException("unexpected pod status", pod.getMetadata().getName(), status.getPhase());
             }
-
 
             var firstNotReadyContainer = getFirstNotReadyContainer(status);
 
@@ -441,7 +403,6 @@ public abstract class AbstractPod {
         return kubernetesClient().getConfiguration().getRequestTimeout();
     }
 
-
     public void addHostPort(Integer port, Integer hostPort) {
         podBuilderFactory.addHostPort(port, hostPort);
     }
@@ -499,80 +460,6 @@ public abstract class AbstractPod {
 
     public String getPodIP() {
         return getPod().map(pod -> pod.getStatus().getHostIP()).orElse(null);
-    }
-
-
-    @SneakyThrows
-    public <T> T copyFileFromContainer(String containerPath, ThrowingFunction<InputStream, T> function) {
-        assertPodRunning("copyFileFromContainer");
-        try (var inputStream = pod.file(containerPath).read()) {
-            return function.apply(inputStream);
-        }
-    }
-
-    @SneakyThrows
-    private void uploadBase64(byte[] payload, String escapedTarPath) {
-        var encoded = Base64.getEncoder().encodeToString(payload);
-        try (var uploadWatch = pod.terminateOnError().exec("sh", "-c", "echo " + encoded + "| base64 -d >" + "'" + escapedTarPath + "'")) {
-            var code = uploadWatch.exitCode().get(getRequestConfig().getRequestTimeout(), MILLISECONDS);
-            if (code != 0) {
-                throw new UploadFileException("Unexpected exit code " + code + ", file '" + escapedTarPath + "'");
-            }
-            checkSize(escapedTarPath, payload.length);
-        }
-    }
-
-    private RequestConfig getRequestConfig() {
-        return ((OperationSupport) pod).getRequestConfig();
-    }
-
-    @SneakyThrows
-    public boolean removeFile(String tarName) {
-        try (var exec = waitEmptyQueue(pod.redirectingError().exec("rm", tarName))) {
-            var exitCode = exec.exitCode().get(getRequestTimeout(), MILLISECONDS);
-            var deleted = exitCode != 0;
-            if (deleted) {
-                log.warn("deleting of temporary file {} finished with unexpected code {}, errOut: {}",
-                        tarName, exitCode, getError(exec));
-            }
-            return deleted;
-        }
-    }
-
-    @SneakyThrows
-    public Container.ExecResult execInContainer(Charset outputCharset, String... command) {
-        var hasShellCall = command.length > 1 && command[0].equals("sh") && command[1].equals("-c");
-        if (!hasShellCall) {
-            var newCmd = new String[command.length + 2];
-            newCmd[0] = "sh";
-            newCmd[1] = "-c";
-            System.arraycopy(command, 0, newCmd, 2, command.length);
-            command = newCmd;
-        }
-
-        try (var execWatch = pod.redirectingOutput().redirectingError().exec(command)) {
-            var exited = execWatch.exitCode();
-            var exitCode = exited.get(getRequestTimeout(), MILLISECONDS);
-            ;
-            String errOut;
-            try {
-                errOut = new String(execWatch.getError().readAllBytes(), outputCharset);
-            } catch (IOException e) {
-                errOut = "";
-                log.info("err output read error", e);
-            }
-            String output;
-            try {
-                output = new String(execWatch.getOutput().readAllBytes(), outputCharset);
-            } catch (IOException e) {
-                output = "";
-                log.info("output read error", e);
-            }
-            var constructor = Container.ExecResult.class.getDeclaredConstructor(int.class, String.class, String.class);
-            constructor.setAccessible(true);
-
-            return constructor.newInstance(exitCode, output, errOut);
-        }
     }
 
     @Override

@@ -17,6 +17,7 @@ import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.jetbrains.annotations.NotNull;
 import org.testcontainers.containers.Container;
+import org.testcontainers.containers.Container.ExecResult;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.HostPortWaitStrategy;
 import org.testcontainers.containers.wait.strategy.LogMessageWaitStrategy;
@@ -25,7 +26,9 @@ import org.testcontainers.images.ImagePullPolicy;
 import org.testcontainers.images.PullPolicy;
 import org.testcontainers.images.builder.Transferable;
 import org.testcontainers.utility.MountableFile;
+import org.testcontainers.utility.ThrowingFunction;
 
+import java.io.InputStream;
 import java.net.InetAddress;
 import java.nio.charset.Charset;
 import java.util.List;
@@ -88,6 +91,29 @@ public class PodContainerDelegate<T extends Container<T>> extends AbstractPod {
                 : waitStrategy instanceof HostPortWaitStrategy
                 ? new PodPortWaitStrategy(getFieldValue(waitStrategy.getClass(), waitStrategy, "ports"))
                 : waitStrategy;
+    }
+
+    @SneakyThrows
+    public ExecResult execInContainer(Charset outputCharset, String... command) {
+        var execResult = KubernetesUtils.exec(pod, getRequestTimeout(), outputCharset, command);
+
+        var constructor = ExecResult.class.getDeclaredConstructor(int.class, String.class, String.class);
+        constructor.setAccessible(true);
+
+        return constructor.newInstance(execResult.exitCode(), execResult.output(), execResult.error());
+    }
+
+    @SneakyThrows
+    public <T> T copyFileFromContainer(String containerPath, ThrowingFunction<InputStream, T> function) {
+        assertPodRunning("copyFileFromContainer");
+        try (var inputStream = pod.file(containerPath).read()) {
+            return function.apply(inputStream);
+        }
+    }
+
+    @SneakyThrows
+    public boolean removeFile(String tarName) {
+        return KubernetesUtils.removeFile(pod, getRequestTimeout(), tarName);
     }
 
     @SneakyThrows
@@ -282,11 +308,11 @@ public class PodContainerDelegate<T extends Container<T>> extends AbstractPod {
         return container.getCommandParts();
     }
 
-    public Container.ExecResult execInContainerWithUser(String user, String... command) {
+    public ExecResult execInContainerWithUser(String user, String... command) {
         return execInContainerWithUser(UTF_8, user, command);
     }
 
-    public Container.ExecResult execInContainerWithUser(Charset outputCharset, String user, String... command) {
+    public ExecResult execInContainerWithUser(Charset outputCharset, String user, String... command) {
         throw new UnsupportedOperationException("execInContainerWithUser");
     }
 

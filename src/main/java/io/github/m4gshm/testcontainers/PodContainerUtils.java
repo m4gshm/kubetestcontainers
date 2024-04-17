@@ -2,14 +2,19 @@ package io.github.m4gshm.testcontainers;
 
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.github.dockerjava.api.command.CreateContainerCmd;
+import io.fabric8.kubernetes.client.dsl.PodResource;
+import lombok.SneakyThrows;
 import lombok.experimental.UtilityClass;
 import org.jetbrains.annotations.NotNull;
 
+import java.io.IOException;
+import java.nio.charset.Charset;
 import java.util.List;
 
 import static com.fasterxml.jackson.databind.MapperFeature.SORT_PROPERTIES_ALPHABETICALLY;
 import static com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS;
 import static java.lang.reflect.Proxy.newProxyInstance;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 @UtilityClass
 public class PodContainerUtils {
@@ -19,7 +24,10 @@ public class PodContainerUtils {
                 .enable(ORDER_MAP_ENTRIES_BY_KEYS)
                 .build();
     }
-    public static @NotNull CreateContainerCmd newCreateContainerCmd(ClassLoader classLoader, PodBuilderFactory podBuilderFactory) {
+
+    public static @NotNull CreateContainerCmd newCreateContainerCmd(
+            ClassLoader classLoader, PodBuilderFactory podBuilderFactory
+    ) {
         return (CreateContainerCmd) newProxyInstance(classLoader, new Class[]{CreateContainerCmd.class}, (
                 proxy, method, args
         ) -> {
@@ -38,4 +46,5 @@ public class PodContainerUtils {
             };
         });
     }
+
 }

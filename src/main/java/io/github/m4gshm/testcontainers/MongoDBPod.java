@@ -5,8 +5,6 @@ import lombok.experimental.Delegate;
 import lombok.extern.slf4j.Slf4j;
 import org.testcontainers.containers.MongoDBContainer;
 
-import static java.util.Objects.requireNonNull;
-
 /**
  * Kubernetes based extension of the {@link org.testcontainers.containers.MongoDBContainer}.
  */
