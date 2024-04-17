@@ -10,17 +10,14 @@ import io.fabric8.kubernetes.api.model.EnvVarBuilder;
 import io.fabric8.kubernetes.api.model.PodBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.KubernetesClientBuilder;
-import io.github.m4gshm.testcontainers.wait.PodLogMessageWaitStrategy;
-import io.github.m4gshm.testcontainers.wait.PodPortWaitStrategy;
 import lombok.NonNull;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import org.jetbrains.annotations.NotNull;
 import org.testcontainers.containers.Container;
 import org.testcontainers.containers.Container.ExecResult;
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.wait.strategy.HostPortWaitStrategy;
-import org.testcontainers.containers.wait.strategy.LogMessageWaitStrategy;
 import org.testcontainers.containers.wait.strategy.WaitStrategy;
 import org.testcontainers.images.ImagePullPolicy;
 import org.testcontainers.images.PullPolicy;
@@ -28,18 +25,27 @@ import org.testcontainers.images.builder.Transferable;
 import org.testcontainers.utility.MountableFile;
 import org.testcontainers.utility.ThrowingFunction;
 
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.InetAddress;
 import java.nio.charset.Charset;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
 
 import static io.github.m4gshm.testcontainers.DefaultPodNameGenerator.newDefaultPodNameGenerator;
+import static io.github.m4gshm.testcontainers.KubernetesUtils.uploadTmpTar;
+import static io.github.m4gshm.testcontainers.PodContainerDelegateUtils.invokeContainerMethod;
+import static io.github.m4gshm.testcontainers.PodContainerDelegateUtils.replacePodWaiters;
+import static io.github.m4gshm.testcontainers.PodContainerDelegateUtils.setContainerFieldValue;
 import static io.github.m4gshm.testcontainers.PodContainerUtils.config;
 import static io.github.m4gshm.testcontainers.PodContainerUtils.newCreateContainerCmd;
 import static java.net.InetAddress.getByName;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.apache.commons.compress.archivers.tar.TarArchiveOutputStream.BIGNUMBER_POSIX;
+import static org.apache.commons.compress.archivers.tar.TarArchiveOutputStream.LONGFILE_POSIX;
 
 /**
  * The delegate is used by container implementations that uses Kubernetes;
@@ -48,11 +54,8 @@ import static java.nio.charset.StandardCharsets.UTF_8;
  */
 @Slf4j
 public class PodContainerDelegate<T extends Container<T>> extends AbstractPod {
+    protected final Map<Transferable, String> copyToTransferableContainerPathMap = new HashMap<>();
     private final T container;
-
-    public PodContainerDelegate(@NonNull T container) {
-        this(container, null);
-    }
 
     public PodContainerDelegate(@NonNull T container, String dockerImageName) {
         this(container, dockerImageName, newDefaultPodNameGenerator());
@@ -65,32 +68,57 @@ public class PodContainerDelegate<T extends Container<T>> extends AbstractPod {
         this.container = container;
 
         if (container instanceof GenericContainer<?>) {
-            var rawWaitStrategy = invokeContainerMethod("getWaitStrategy");
-            var replacePodWaiters = replacePodWaiters((WaitStrategy) rawWaitStrategy);
-            setFieldValue(GenericContainer.class, container, "waitStrategy", replacePodWaiters);
+            var rawWaitStrategy = invokeContainerMethod(container, "getWaitStrategy");
+            var replacedPodWaiters = replacePodWaiters((WaitStrategy) rawWaitStrategy);
+            setContainerFieldValue(container, "waitStrategy", replacedPodWaiters);
         }
     }
 
-    @SneakyThrows
-    private static <T> T getFieldValue(Class<?> type, Object object, String fieldName) {
-        var regExField = type.getDeclaredField(fieldName);
-        regExField.setAccessible(true);
-        return (T) regExField.get(object);
+    @Override
+    protected void waitUntilContainerStarted() {
+        invokeContainerMethod(container, "waitUntilContainerStarted");
     }
 
     @SneakyThrows
-    private static void setFieldValue(Class<?> type, Object object, String fieldName, Object value) {
-        var regExField = type.getDeclaredField(fieldName);
-        regExField.setAccessible(true);
-        regExField.set(object, value);
+    protected void doAfterStart() {
+        copyToTransferableContainerPathMap.forEach(this::copyFileToContainer);
+
+        var containerIsStarted = GenericContainer.class.getDeclaredMethod(
+                "containerIsStarted", InspectContainerResponse.class, boolean.class
+        );
+        containerIsStarted.setAccessible(true);
+        containerIsStarted.invoke(container, new InspectContainerResponse(), reused);
     }
 
-    private static WaitStrategy replacePodWaiters(@NotNull WaitStrategy waitStrategy) {
-        return waitStrategy instanceof LogMessageWaitStrategy
-                ? new PodLogMessageWaitStrategy(getFieldValue(waitStrategy.getClass(), waitStrategy, "regEx"))
-                : waitStrategy instanceof HostPortWaitStrategy
-                ? new PodPortWaitStrategy(getFieldValue(waitStrategy.getClass(), waitStrategy, "ports"))
-                : waitStrategy;
+    @Override
+    protected void configure() {
+        invokeContainerMethod(container, "configure");
+    }
+
+    @Override
+    @SneakyThrows
+    protected void doBeforeStart() {
+        var containerIsStarted = GenericContainer.class.getDeclaredMethod(
+                "containerIsStarting", InspectContainerResponse.class, boolean.class
+        );
+        containerIsStarted.setAccessible(true);
+        containerIsStarted.invoke(container, new InspectContainerResponse(), false);
+    }
+
+    @Override
+    protected @NotNull List<EnvVar> getEnvVars() {
+        return container.getEnvMap().entrySet().stream().map(e ->
+                new EnvVarBuilder().withName(e.getKey()).withValue(e.getValue()).build()).toList();
+    }
+
+    @Override
+    protected String[] getCommandParts() {
+        return container.getCommandParts();
+    }
+
+    @Override
+    protected List<Integer> getExposedPorts() {
+        return container.getExposedPorts();
     }
 
     @SneakyThrows
@@ -117,28 +145,17 @@ public class PodContainerDelegate<T extends Container<T>> extends AbstractPod {
     }
 
     @SneakyThrows
-    protected void containerIsStarted(InspectContainerResponse containerInfo, boolean reused) {
-        var containerIsStarted = GenericContainer.class.getDeclaredMethod(
-                "containerIsStarted", InspectContainerResponse.class, boolean.class
-        );
-        containerIsStarted.setAccessible(true);
-        containerIsStarted.invoke(container, containerInfo, reused);
-    }
-
-    @SneakyThrows
-    protected Object invokeContainerMethod(String name) {
-        if (container instanceof GenericContainer<?>) {
-            var method = GenericContainer.class.getDeclaredMethod(name);
-            method.setAccessible(true);
-            return method.invoke(container);
-        } else {
-            throw new IllegalStateException("no method '" + name + "' in container " + container.getClass());
+    public void copyFileToContainer(Transferable transferable, String containerPath) {
+        assertPodRunning("copyFileToContainer");
+        var payload = new ByteArrayOutputStream();
+        try (var tar = new TarArchiveOutputStream(payload)) {
+            tar.setLongFileMode(LONGFILE_POSIX);
+            tar.setBigNumberMode(BIGNUMBER_POSIX);
+            transferable.transferTo(tar, containerPath);
         }
-    }
 
-    @Override
-    protected void waitUntilContainerStarted() {
-        invokeContainerMethod("waitUntilContainerStarted");
+        uploadTmpTar(pod, getRequestTimeout(), this.podName, payload.toByteArray());
+        log.info("file {} copied to pod {}", containerPath, pod.get().getMetadata().getName());
     }
 
     public void setDockerImageName(String dockerImageName) {
@@ -247,7 +264,7 @@ public class PodContainerDelegate<T extends Container<T>> extends AbstractPod {
 
     @SneakyThrows
     public T waitingFor(@NonNull WaitStrategy waitStrategy) {
-        setContainerField("waitStrategy", replacePodWaiters(waitStrategy));
+        setContainerFieldValue(container, "waitStrategy", replacePodWaiters(waitStrategy));
         return container;
     }
 
@@ -297,17 +314,6 @@ public class PodContainerDelegate<T extends Container<T>> extends AbstractPod {
         throw new UnsupportedOperationException("getContainerInfo");
     }
 
-    @Override
-    protected @NotNull List<EnvVar> getEnvVars() {
-        return container.getEnvMap().entrySet().stream().map(e ->
-                new EnvVarBuilder().withName(e.getKey()).withValue(e.getValue()).build()).toList();
-    }
-
-    @Override
-    protected String[] getCommandParts() {
-        return container.getCommandParts();
-    }
-
     public ExecResult execInContainerWithUser(String user, String... command) {
         return execInContainerWithUser(UTF_8, user, command);
     }
@@ -322,37 +328,6 @@ public class PodContainerDelegate<T extends Container<T>> extends AbstractPod {
         }
         podBuilderFactory.getLabels().put(key, value);
         return container;
-    }
-
-    @Override
-    protected void configure() {
-        invokeContainerMethod("configure");
-    }
-
-    @Override
-    @SneakyThrows
-    protected void containerIsStarting(InspectContainerResponse containerInfo, boolean reused) {
-        var containerIsStarted = GenericContainer.class.getDeclaredMethod(
-                "containerIsStarting", InspectContainerResponse.class, boolean.class
-        );
-        containerIsStarted.setAccessible(true);
-        containerIsStarted.invoke(container, containerInfo, reused);
-    }
-
-    @SneakyThrows
-    private void setContainerField(String name, Object value) {
-        if (container instanceof GenericContainer<?>) {
-            var field = GenericContainer.class.getDeclaredField(name);
-            field.setAccessible(true);
-            field.set(container, value);
-        } else {
-            throw new IllegalStateException("no field '" + name + "' in container " + container.getClass());
-        }
-    }
-
-    @Override
-    protected List<Integer> getExposedPorts() {
-        return container.getExposedPorts();
     }
 
 }

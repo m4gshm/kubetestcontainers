@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static java.lang.Boolean.TRUE;
+import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.stream.Collectors.toMap;
@@ -222,6 +223,44 @@ public class KubernetesUtils {
             throw new UploadFileException("Unexpected file size " + size + ", expected " + expected + ", file '" + filePath + "'");
         }
     }
+
+    @SneakyThrows
+    public static void uploadTmpTar(PodResource podResource, int requestTimeout, String tmpTarName, byte[] payload) {
+        var tmpDir = "/tmp";
+        var tarName = tmpDir + "/" + tmpTarName + ".tar";
+        log.debug("tar uploading {}", tarName);
+
+        var escapedTarPath = escapeQuotes(tarName);
+        try (var exec = podResource.terminateOnError().exec("touch", escapedTarPath)) {
+            waitEmptyQueue(exec);
+        }
+
+        uploadStdIn(podResource, requestTimeout, escapedTarPath, payload);
+//        uploadBase64(payload, escapedTarPath);
+
+        var unpackDir = "/";
+        var extractTarCmd = format("mkdir -p %1$s; tar -C %1$s -xmf %2$s; e=$?; rm %2$s; exit $e",
+                shellQuote(unpackDir), tarName);
+
+        var out = new ByteArrayOutputStream();
+        var err = new ByteArrayOutputStream();
+        try (var exec = podResource.redirectingInput().writingOutput(out).writingError(err).exec("sh", "-c", extractTarCmd)) {
+            waitEmptyQueue(exec);
+            var exitedCode = exec.exitCode();
+            var exitCode = exitedCode.get(requestTimeout, MILLISECONDS);
+            ;
+            var unpacked = exitCode == 0;
+            if (!unpacked) {
+                throw new UploadFileException("unpack temporary tar " + tarName +
+                        ", exit code " + exitCode +
+                        ", out '" + out.toString(UTF_8) + "'" +
+                        ", errOut '" + err.toString(UTF_8) + "'");
+            } else {
+                log.debug("upload tar -> {}", out.toString(UTF_8));
+            }
+        }
+    }
+
 
     public record ExecResult(int exitCode, String output, String error) {
     }

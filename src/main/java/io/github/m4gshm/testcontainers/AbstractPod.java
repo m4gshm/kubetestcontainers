@@ -1,7 +1,6 @@
 package io.github.m4gshm.testcontainers;
 
 import com.fasterxml.jackson.databind.json.JsonMapper;
-import com.github.dockerjava.api.command.InspectContainerResponse;
 import io.fabric8.kubernetes.api.model.ContainerPort;
 import io.fabric8.kubernetes.api.model.EnvVar;
 import io.fabric8.kubernetes.api.model.ListOptionsBuilder;
@@ -15,19 +14,13 @@ import lombok.NonNull;
 import lombok.Setter;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import org.testcontainers.containers.output.OutputFrame;
-import org.testcontainers.images.builder.Transferable;
 import org.testcontainers.shaded.com.google.common.hash.Hashing;
-import org.testcontainers.utility.ThrowingFunction;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.time.Duration;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -39,24 +32,18 @@ import static io.github.m4gshm.testcontainers.KubernetesUtils.PENDING;
 import static io.github.m4gshm.testcontainers.KubernetesUtils.RUNNING;
 import static io.github.m4gshm.testcontainers.KubernetesUtils.UNKNOWN;
 import static io.github.m4gshm.testcontainers.KubernetesUtils.createPod;
-import static io.github.m4gshm.testcontainers.KubernetesUtils.escapeQuotes;
 import static io.github.m4gshm.testcontainers.KubernetesUtils.getFirstNotReadyContainer;
 import static io.github.m4gshm.testcontainers.KubernetesUtils.resource;
-import static io.github.m4gshm.testcontainers.KubernetesUtils.shellQuote;
-import static io.github.m4gshm.testcontainers.KubernetesUtils.uploadStdIn;
-import static io.github.m4gshm.testcontainers.KubernetesUtils.waitEmptyQueue;
 import static io.github.m4gshm.testcontainers.PodContainerUtils.config;
 import static java.lang.Boolean.getBoolean;
-import static java.lang.String.format;
-import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.time.Duration.ofSeconds;
 import static java.util.Objects.requireNonNull;
 import static java.util.Optional.ofNullable;
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static lombok.AccessLevel.PROTECTED;
-import static org.apache.commons.compress.archivers.tar.TarArchiveOutputStream.BIGNUMBER_POSIX;
-import static org.apache.commons.compress.archivers.tar.TarArchiveOutputStream.LONGFILE_POSIX;
 
+/**
+ * The base pod start/stop api implementation.
+ */
 @Slf4j
 public abstract class AbstractPod {
     public static final String ORG_TESTCONTAINERS_TYPE = "org.testcontainers.type";
@@ -65,7 +52,6 @@ public abstract class AbstractPod {
     private static final String ORG_TESTCONTAINERS_HASH = "org.testcontainers.hash";
     private static final String ORG_TESTCONTAINERS_DELETE_ON_STOP = "org.testcontainers.deleteOnStop";
     private static final String ORG_TESTCONTAINERS_SESSION_LIMITED = "org.testcontainers.sessionLimited";
-    protected final Map<Transferable, String> copyToTransferableContainerPathMap = new HashMap<>();
     protected final PodBuilderFactory podBuilderFactory = new PodBuilderFactory();
     @Getter
     @Setter
@@ -93,6 +79,14 @@ public abstract class AbstractPod {
     public AbstractPod(@NonNull PodNameGenerator podNameGenerator) {
         this.podNameGenerator = podNameGenerator;
     }
+
+    protected abstract void configure();
+
+    protected abstract List<EnvVar> getEnvVars();
+
+    protected abstract String[] getCommandParts();
+
+    protected abstract void waitUntilContainerStarted();
 
     public void start() {
         configure();
@@ -173,10 +167,7 @@ public abstract class AbstractPod {
         }
         this.pod = podResource;
 
-        var containerInfo = new InspectContainerResponse();
-
-        //todo fill containerInfo
-        containerIsStarting(containerInfo, false);
+        doBeforeStart();
 
         waitUntilPodStarted();
         if (localPortForwardEnabled) {
@@ -185,10 +176,7 @@ public abstract class AbstractPod {
         waitUntilContainerStarted();
         this.started = true;
 
-        copyToTransferableContainerPathMap.forEach(this::copyFileToContainer);
-
-        //todo fill containerInfo
-        containerIsStarted(containerInfo, false);
+        doAfterStart();
     }
 
     public void stop() {
@@ -215,17 +203,11 @@ public abstract class AbstractPod {
         return podBuilderFactory.getDockerImageName();
     }
 
-    protected abstract void containerIsStarted(InspectContainerResponse containerInfo, boolean reused);
+    protected void doBeforeStart() {
+    }
 
-    protected abstract List<EnvVar> getEnvVars();
-
-    protected abstract String[] getCommandParts();
-
-    protected abstract void waitUntilContainerStarted();
-
-    protected abstract void configure();
-
-    protected abstract void containerIsStarting(InspectContainerResponse containerInfo, boolean reused);
+    protected void doAfterStart() {
+    }
 
     protected KubernetesClient kubernetesClient() {
         var kubernetesClient = this.kubernetesClient;
@@ -242,60 +224,6 @@ public abstract class AbstractPod {
     @SneakyThrows
     protected String hash(Pod pod) {
         return Hashing.sha1().hashBytes(jsonMapper.writeValueAsBytes(pod)).toString();
-    }
-
-    @SneakyThrows
-    public void copyFileToContainer(Transferable transferable, String containerPath) {
-        assertPodRunning("copyFileToContainer");
-        var payload = new ByteArrayOutputStream();
-        try (var tar = new TarArchiveOutputStream(payload)) {
-            tar.setLongFileMode(LONGFILE_POSIX);
-            tar.setBigNumberMode(BIGNUMBER_POSIX);
-            transferable.transferTo(tar, containerPath);
-        }
-
-        uploadTmpTar(payload.toByteArray());
-        log.info("file {} copied to pod {}", containerPath, pod.get().getMetadata().getName());
-    }
-
-    @SneakyThrows
-    public void uploadTmpTar(byte[] payload) {
-        var podName = this.podName;
-        var podResource = pod;
-
-        var tmpDir = "/tmp";
-        var tarName = tmpDir + "/" + podName + ".tar";
-        log.debug("tar uploading {}", tarName);
-
-        var escapedTarPath = escapeQuotes(tarName);
-        try (var exec = podResource.terminateOnError().exec("touch", escapedTarPath)) {
-            waitEmptyQueue(exec);
-        }
-
-        uploadStdIn(pod, getRequestTimeout(), escapedTarPath, payload);
-//        uploadBase64(payload, escapedTarPath);
-
-        var unpackDir = "/";
-        var extractTarCmd = format("mkdir -p %1$s; tar -C %1$s -xmf %2$s; e=$?; rm %2$s; exit $e",
-                shellQuote(unpackDir), tarName);
-
-        var out = new ByteArrayOutputStream();
-        var err = new ByteArrayOutputStream();
-        try (var exec = podResource.redirectingInput().writingOutput(out).writingError(err).exec("sh", "-c", extractTarCmd)) {
-            waitEmptyQueue(exec);
-            var exitedCode = exec.exitCode();
-            var exitCode = exitedCode.get(getRequestTimeout(), MILLISECONDS);
-            ;
-            var unpacked = exitCode == 0;
-            if (!unpacked) {
-                throw new UploadFileException("unpack temporary tar " + tarName +
-                        ", exit code " + exitCode +
-                        ", out '" + out.toString(UTF_8) + "'" +
-                        ", errOut '" + err.toString(UTF_8) + "'");
-            } else {
-                log.debug("upload tar -> {}", out.toString(UTF_8));
-            }
-        }
     }
 
     protected void waitUntilPodStarted() {
