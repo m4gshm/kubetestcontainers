@@ -43,6 +43,29 @@ dependencies {
     testImplementation("jakarta.persistence:jakarta.persistence-api:3.1.0")
 }
 
-tasks.test {
+tasks.withType<Test> {
     useJUnitPlatform()
+    testLogging {
+        showExceptions = true
+        showCauses = true
+        showStackTraces = true
+
+        events = setOf(
+            org.gradle.api.tasks.testing.logging.TestLogEvent.FAILED,
+            org.gradle.api.tasks.testing.logging.TestLogEvent.PASSED,
+            org.gradle.api.tasks.testing.logging.TestLogEvent.SKIPPED,
+            org.gradle.api.tasks.testing.logging.TestLogEvent.STANDARD_OUT,
+            org.gradle.api.tasks.testing.logging.TestLogEvent.STANDARD_ERROR,
+        )
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+
+//        debug {
+//            events = testLogging.events
+//            exceptionFormat = testLogging.exceptionFormat
+//        }
+        info {
+            events = testLogging.events
+            exceptionFormat = testLogging.exceptionFormat
+        }
+    }
 }

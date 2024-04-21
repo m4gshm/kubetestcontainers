@@ -12,20 +12,20 @@ import io.fabric8.kubernetes.api.model.PodSpecBuilder;
 import io.fabric8.kubernetes.api.model.SecurityContextBuilder;
 import lombok.Getter;
 import lombok.Setter;
-import org.jetbrains.annotations.NotNull;
 
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.UnaryOperator;
 
+import static lombok.AccessLevel.NONE;
+
 @Getter
 @Setter
 public class PodBuilderFactory {
-    private final Map<String, String> labels = new HashMap<>();
-    private final Map<Integer, Integer> hostPorts = new HashMap<>();
-
+    private Map<String, String> labels = new LinkedHashMap<>();
     private String dockerImageName;
     private Boolean runAsNonRoot;
     private Long runAsUser;
@@ -42,8 +42,19 @@ public class PodBuilderFactory {
     private String portProtocol = "TCP";
     private List<EnvVar> vars;
     private String[] args;
-    private List<Integer> exposedPorts = new ArrayList<>();
-    private boolean hostPortEnabled = false;
+    @Getter(NONE)
+    @Setter(NONE)
+    private Map<Integer, ContainerPort> ports = new LinkedHashMap<>();
+
+    private static ContainerPort newContainerPort(String portProtocol, Integer port, Integer hostPort) {
+        var portBuilder = new ContainerPortBuilder()
+                .withContainerPort(port)
+                .withProtocol(portProtocol);
+        if (hostPort != null) {
+            portBuilder.withHostPort(hostPort);
+        }
+        return portBuilder.build();
+    }
 
     public PodBuilder newPodBuilder() {
         var containerBuilder = new ContainerBuilder()
@@ -59,7 +70,7 @@ public class PodBuilderFactory {
                 .withName(getPodContainerName())
                 .withArgs(getArgs())
                 .withCommand(getEntryPoint())
-                .withPorts(getContainerPorts())
+                .withPorts(new ArrayList<>(getPorts()))
                 .withEnv(getVars());
         if (getContainerBuilderCustomizer() != null) {
             containerBuilder = getContainerBuilderCustomizer().apply(containerBuilder);
@@ -86,21 +97,16 @@ public class PodBuilderFactory {
         return podBuilder;
     }
 
-    @NotNull
-    protected List<ContainerPort> getContainerPorts() {
-        return getExposedPorts().stream().map(port -> {
-            var portBuilder = new ContainerPortBuilder()
-                    .withContainerPort(port)
-                    .withProtocol(getPortProtocol());
-            if (isHostPortEnabled()) {
-                portBuilder.withHostPort(getHostPorts().get(port));
-            }
-            return portBuilder.build();
-        }).toList();
+    protected Collection<ContainerPort> getPorts() {
+        return ports.values();
     }
 
-    public void addHostPort(Integer port, Integer hostPort) {
-        getHostPorts().put(port, hostPort);
+    public void addPort(Integer port, Integer hostPort) {
+        ports.put(port, newContainerPort(getPortProtocol(), port, hostPort));
+    }
+
+    public void addPort(Integer port) {
+        addPort(port, null);
     }
 
     public void addLabel(String label, String value) {

@@ -1,6 +1,7 @@
 package io.github.m4gshm.testcontainers;
 
 import com.fasterxml.jackson.databind.json.JsonMapper;
+import io.fabric8.kubernetes.api.model.Container;
 import io.fabric8.kubernetes.api.model.ContainerPort;
 import io.fabric8.kubernetes.api.model.EnvVar;
 import io.fabric8.kubernetes.api.model.ListOptionsBuilder;
@@ -89,14 +90,17 @@ public abstract class AbstractPod {
     protected abstract void waitUntilContainerStarted();
 
     public void start() {
+        log.trace("pre starting configure pod");
         configure();
 
         var podName = podNameGenerator.generatePodName(getDockerImageName());
+        log.debug("starting pod name '{}'", podName);
         this.podName = podName;
 
         podBuilderFactory.setArgs(getCommandParts());
         podBuilderFactory.setVars(getEnvVars());
         podBuilderFactory.addLabel(ORG_TESTCONTAINERS_TYPE, KUBECONTAINERS);
+        getExposedPorts().forEach(podBuilderFactory::addPort);
         var podBuilder = podBuilderFactory.newPodBuilder();
 
         var hash = hash(podBuilder.build());
@@ -168,15 +172,16 @@ public abstract class AbstractPod {
         this.pod = podResource;
 
         doBeforeStart();
-
+        log.trace("wait until pod started, {}", podName);
         waitUntilPodStarted();
         if (localPortForwardEnabled) {
             startPortForward();
         }
+        log.trace("wait until container started, {}", podName);
         waitUntilContainerStarted();
         this.started = true;
-
         doAfterStart();
+        log.debug("pod has been started, {}", podName);
     }
 
     public void stop() {
@@ -305,7 +310,10 @@ public abstract class AbstractPod {
     }
 
     protected void startPortForward() {
-        localPortForwards = KubernetesUtils.startPortForward(getPodResource(), localPortForwardHost, getExposedPorts());
+        var localPortForwardHost = this.localPortForwardHost;
+        var ports = getExposedPorts();
+        log.debug("starting port forwarding, inetAddress {}, ports {}", localPortForwardHost, ports);
+        localPortForwards = KubernetesUtils.startPortForward(getPodResource(), localPortForwardHost, ports);
     }
 
     protected abstract List<Integer> getExposedPorts();
@@ -331,8 +339,8 @@ public abstract class AbstractPod {
         return kubernetesClient().getConfiguration().getRequestTimeout();
     }
 
-    public void addHostPort(Integer port, Integer hostPort) {
-        podBuilderFactory.addHostPort(port, hostPort);
+    public void addPort(Integer port, Integer hostPort) {
+        podBuilderFactory.addPort(port, hostPort);
     }
 
     public boolean isRunning() {
@@ -361,8 +369,10 @@ public abstract class AbstractPod {
 
     protected io.fabric8.kubernetes.api.model.Container getContainer() {
         var containerName = podBuilderFactory.getPodContainerName();
-        return getPod().flatMap(pod -> pod.getSpec().getContainers().stream().filter(c -> containerName.equals(c.getName()))
-                .findFirst()).orElseThrow(() -> new IllegalStateException("container '" + containerName + "' not found"));
+        var containers = getPod().map(pod -> pod.getSpec().getContainers()).orElse(List.of());
+        return containers.stream().filter(c -> containerName.equals(c.getName())).findFirst().orElseThrow(
+                () -> new IllegalStateException("container not found (" + containerName + "), available " +
+                        containers.stream().map(Container::getName).toList()));
     }
 
     public String getMappedPortHost(int originalPort) {

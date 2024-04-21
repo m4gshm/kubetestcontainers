@@ -16,12 +16,11 @@ import static java.util.Arrays.stream;
 @UtilityClass
 public class PodContainerDelegateUtils {
 
-    public static <T> T getFieldValue(Object object, String regEx) {
+    public static <T> T getFieldValue(Object object, String regEx) throws NoSuchFieldException, IllegalAccessException {
         return getFieldValue(object.getClass(), object, regEx);
     }
 
-    @SneakyThrows
-    private static <T> T getFieldValue(Class<?> type, Object object, String fieldName) {
+    private static <T> T getFieldValue(Class<?> type, Object object, String fieldName) throws NoSuchFieldException, IllegalAccessException {
         var regExField = type.getDeclaredField(fieldName);
         regExField.setAccessible(true);
         return (T) regExField.get(object);
@@ -39,11 +38,19 @@ public class PodContainerDelegateUtils {
     }
 
     public static WaitStrategy replacePodWaiters(@NotNull WaitStrategy waitStrategy) {
-        return waitStrategy instanceof LogMessageWaitStrategy
-                ? new PodLogMessageWaitStrategy(getFieldValue(waitStrategy, "regEx"))
-                : waitStrategy instanceof HostPortWaitStrategy
-                ? new PodPortWaitStrategy(getFieldValue(waitStrategy, "ports"))
-                : waitStrategy;
+        try {
+            return waitStrategy instanceof LogMessageWaitStrategy
+                    ? new PodLogMessageWaitStrategy(getFieldValue(waitStrategy, "regEx"))
+                    : waitStrategy instanceof HostPortWaitStrategy
+                    ? new PodPortWaitStrategy(getFieldValue(waitStrategy, "ports"))
+                    : waitStrategy;
+        } catch (NoSuchFieldException e) {
+            throw new UnsupportedOperationException("unsupported WaitStrategy type " +
+                    waitStrategy.getClass().getSimpleName(), e);
+        } catch (IllegalAccessException e) {
+            throw new IllegalStateException("unreadable field of WaitStrategy " +
+                    waitStrategy.getClass().getSimpleName(), e);
+        }
     }
 
     @SneakyThrows

@@ -122,7 +122,7 @@ public class KubernetesUtils {
                     throw new StartPodException("port forward server error", podName, throwable);
                 }
             } else {
-                log.info("port forward local {}:{} to remote {}:{}, ", localAddress.getHostAddress(), localPort,
+                log.info("success port forward, local {}:{} to remote {}:{}, ", localAddress.getHostAddress(), localPort,
                         podName, port);
             }
             return localPortForward;

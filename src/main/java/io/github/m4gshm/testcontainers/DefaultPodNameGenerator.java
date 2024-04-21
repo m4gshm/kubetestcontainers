@@ -26,14 +26,16 @@ public class DefaultPodNameGenerator implements PodNameGenerator {
 
     private static String imageNamePrefix(@NonNull String dockerImageName) {
         var parts = dockerImageName.split(":");
-        var prefix = parts.length > 0 ? parts[0] : "";
-        return !prefix.isEmpty() ? prefix + "-" : "";
+        var imageNamePath = parts.length > 0 ? parts[0] : "";
+        var pathParts = imageNamePath.split("/");
+        var name = pathParts[pathParts.length - 1];
+        return !name.isEmpty() ? name + "-" : "";
     }
 
     @Override
     public String generatePodName(@NonNull String dockerImageName) {
         var maxNameLength = 63;
-        var prefix = this.prefix + imageNamePrefix(dockerImageName);
+        var prefix = this.prefix + (withImageNamePrefix ? imageNamePrefix(dockerImageName) : "");
         var reminds = maxNameLength - prefix.length();
         var bytes = new byte[reminds / 2];
         random.nextBytes(bytes);
