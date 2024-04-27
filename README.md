@@ -6,6 +6,14 @@ Requires Java 17 or higher.
 
 Compatibility with Testcontainers 1.19.7.
 
+## Implementations
+
+- [PostgresqlPod](./src/main/java/io/github/m4gshm/testcontainers/PostgresqlPod.java)
+
+- [MongoDBPod](./src/main/java/io/github/m4gshm/testcontainers/MongoDBPod.java)
+
+- [GenericPod](./src/main/java/io/github/m4gshm/testcontainers/GenericPod.java)
+
 ## Install
 
 ### Gradle (Kotlin syntax)
@@ -19,7 +27,7 @@ repositories {
 
 dependencies {
     testImplementation("io.github.m4gshm:kubetestcontainers:0.0.1-rc1")
-    testImplementation("org.testcontainers:postgresql:1.19.0")
+    testImplementation("org.testcontainers:postgresql:1.19.7")
 }
 ```
 
@@ -37,6 +45,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.JdbcDatabaseContainer;
+import org.testcontainers.containers.PostgreSQLContainer;
 
 import java.sql.SQLException;
 
@@ -44,7 +53,12 @@ import static java.sql.DriverManager.getConnection;
 
 public class JdbcTest {
 
-    protected static JdbcDatabaseContainer<?> postgres = new PostgresqlPod();
+    private final static JdbcDatabaseContainer<?> postgres = useKubernetes()
+            ? new PostgresqlPod() : new PostgreSQLContainer<>();
+
+    private static boolean useKubernetes() {
+        return "kuber".equals(System.getProperty("testcontainers-engine", "kuber"));
+    }
 
     @BeforeAll
     static void beforeAll() {
@@ -83,7 +97,6 @@ public class JdbcTest {
                     Assertions.assertEquals("Alice", name);
                 }
             }
-
         }
     }
 }
