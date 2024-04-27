@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.JdbcDatabaseContainer;
+import org.testcontainers.containers.PostgreSQLContainer;
 
 import java.sql.SQLException;
 
@@ -12,7 +13,12 @@ import static java.sql.DriverManager.getConnection;
 
 public class JdbcTest {
 
-    protected static JdbcDatabaseContainer<?> postgres = new PostgresqlPod();
+    private final static JdbcDatabaseContainer<?> postgres = useKubernetes()
+            ? new PostgresqlPod() : new PostgreSQLContainer<>();
+
+    private static boolean useKubernetes() {
+        return "kuber".equals(System.getProperty("testcontainers-engine", "kuber"));
+    }
 
     @BeforeAll
     static void beforeAll() {
@@ -51,7 +57,6 @@ public class JdbcTest {
                     Assertions.assertEquals("Alice", name);
                 }
             }
-
         }
     }
 }

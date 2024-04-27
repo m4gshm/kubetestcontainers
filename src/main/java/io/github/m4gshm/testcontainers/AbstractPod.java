@@ -70,6 +70,7 @@ public abstract class AbstractPod {
     @Getter
     protected String podName;
     protected boolean deletePodOnStop = false;
+    protected boolean deletePodOnError = false;
     @Getter(PROTECTED)
     protected boolean started;
     protected InetAddress localPortForwardHost;
@@ -192,14 +193,12 @@ public abstract class AbstractPod {
                 log.error("close port forward error, {}", e.getMessage(), e);
             }
         }
-        if (!reused) {
-            if (deletePodOnStop) {
-                var podResource = this.getPodResource();
-                if (podResource != null) {
-                    Pod pod = podResource.get();
-                    log.debug("delete pod on stop {}", pod != null ? pod.getMetadata().getName() : "'Not Found'");
-                    podResource.delete();
-                }
+        if (!reused && deletePodOnStop) {
+            var podResource = getPodResource();
+            if (podResource != null) {
+                var pod = podResource.get();
+                log.debug("delete pod on stop {}", pod != null ? pod.getMetadata().getName() : "'Not Found'");
+                podResource.delete();
             }
         }
     }
@@ -266,7 +265,7 @@ public abstract class AbstractPod {
             try {
                 Thread.sleep(100);
             } catch (InterruptedException e) {
-                getPodResource().delete();
+                deleteOnError();
                 throw new StartPodException("interrupted", podName, phase, e);
             }
             status = getPodResource().get().getStatus();
@@ -274,7 +273,7 @@ public abstract class AbstractPod {
 
         try {
             if (!RUNNING.equals(status.getPhase())) {
-                getPodResource().delete();
+                deleteOnError();
                 throw new StartPodException("unexpected pod status", pod.getMetadata().getName(), status.getPhase());
             }
 
@@ -298,6 +297,17 @@ public abstract class AbstractPod {
                 log.error("log reading error", lre);
             }
             throw se;
+        }
+    }
+
+    private void deleteOnError() {
+        if (!reused && deletePodOnError) {
+            var podResource = getPodResource();
+            if (podResource != null) {
+                var pod = podResource.get();
+                log.debug("delete pod on error {}", pod != null ? pod.getMetadata().getName() : "'Not Found'");
+                podResource.delete();
+            }
         }
     }
 

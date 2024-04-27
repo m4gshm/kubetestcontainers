@@ -35,11 +35,12 @@ public class Session {
     }
 
     public void deletePods() {
-        for (var pod : pods.values()) {
-            var podName = pod.get().getMetadata().getName();
+        for (var podResource : pods.values()) {
+            var pod = podResource.get();
+            var podName = pod != null ? pod.getMetadata().getName() : "ERROR ON NAME RETRIEVING";
             try {
                 log.debug("removing pod {}", podName);
-                var statusDetails = pod.delete();
+                var statusDetails = podResource.delete();
                 if (log.isDebugEnabled())
                     if (statusDetails != null) {
                         var statuses = statusDetails.stream().map(StatusDetails::getName).toList();
