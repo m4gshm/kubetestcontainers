@@ -1,3 +1,3 @@
 rootProject.name = "kubetestcontainers"
 
-include(":tests")
+include(":test")

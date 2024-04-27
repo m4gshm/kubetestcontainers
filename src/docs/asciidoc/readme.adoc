@@ -1,0 +1,38 @@
+= Kubetestcontainers
+
+== Testcontainers on Kubernetes (under construction)
+
+A tool to run testcontainers tests in a kubernetes environment.
+
+Requires Java 17 or higher.
+
+Compatibility with Testcontainers 1.19.7.
+
+=== Implementations
+- link:./src/main/java/io/github/m4gshm/testcontainers/PostgresqlPod.java[PostgresqlPod]
+- link:./src/main/java/io/github/m4gshm/testcontainers/MongoDBPod.java[MongoDBPod]
+- link:./src/main/java/io/github/m4gshm/testcontainers/GenericPod.java[GenericPod]
+
+=== Install
+==== Gradle (Kotlin  syntax)
+Add the code below to your `build.gradle.kts`
+[source,kotlin]
+----
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation("io.github.m4gshm:kubetestcontainers:0.0.1-rc1")
+    testImplementation("org.testcontainers:postgresql:1.19.7")
+}
+----
+
+=== Usage example
+
+To run locally, it is highly recommended to use link:https://minikube.sigs.k8s.io[Minikube] or link:https://kind.sigs.k8s.io[Kind].
+
+[source,java]
+----
+include::../../../test/src/test/java/example/JdbcTest.java[]
+----
