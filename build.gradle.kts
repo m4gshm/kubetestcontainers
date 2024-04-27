@@ -39,7 +39,7 @@ tasks.test {
 
 java {
     withSourcesJar()
-//    withJavadocJar()
+    withJavadocJar()
     targetCompatibility = JavaVersion.VERSION_17
     sourceCompatibility = JavaVersion.VERSION_17
     modularity.inferModulePath.set(true)
@@ -102,10 +102,10 @@ publishing {
     }
 }
 
-//signing {
-//    val extension = extensions.getByName("publishing") as PublishingExtension
-//    sign(extension.publications)
-//}
+signing {
+    val extension = extensions.getByName("publishing") as PublishingExtension
+    sign(extension.publications)
+}
 
 nmcp {
     publishAllProjectsProbablyBreakingProjectIsolation {
