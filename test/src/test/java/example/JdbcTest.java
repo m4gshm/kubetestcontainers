@@ -27,8 +27,6 @@ public class JdbcTest {
         postgres.start();
     }
 
-
-
     @AfterAll
     static void afterAll() {
         postgres.stop();

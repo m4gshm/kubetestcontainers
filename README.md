@@ -41,6 +41,7 @@ To run locally, it is highly recommended to use
 package example;
 
 import io.github.m4gshm.testcontainers.PostgresqlPod;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -54,7 +55,8 @@ import static java.sql.DriverManager.getConnection;
 public class JdbcTest {
 
     private final static JdbcDatabaseContainer<?> postgres = useKubernetes()
-            ? new PostgresqlPod() : new PostgreSQLContainer<>();
+            ? new PostgresqlPod().withDeletePodOnStop(true).withDeletePodOnError(true)
+            : new PostgreSQLContainer<>();
 
     private static boolean useKubernetes() {
         return "kuber".equals(System.getProperty("testcontainers-engine", "kuber"));
@@ -63,6 +65,11 @@ public class JdbcTest {
     @BeforeAll
     static void beforeAll() {
         postgres.start();
+    }
+
+    @AfterAll
+    static void afterAll() {
+        postgres.stop();
     }
 
     @Test
