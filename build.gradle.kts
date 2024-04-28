@@ -18,10 +18,11 @@ dependencies {
     compileOnly("org.projectlombok:lombok:1.18.28")
     testAnnotationProcessor("org.projectlombok:lombok:1.18.30")
 
-    implementation("org.testcontainers:testcontainers:1.19.1")
-    compileOnly("org.testcontainers:jdbc:1.19.7")
-    compileOnly("org.testcontainers:postgresql:1.19.7")
-    compileOnly("org.testcontainers:mongodb:1.19.7")
+    val testcontainersVer= "1.19.7"
+    implementation("org.testcontainers:testcontainers:$testcontainersVer")
+    compileOnly("org.testcontainers:jdbc:$testcontainersVer")
+    compileOnly("org.testcontainers:postgresql:$testcontainersVer")
+    compileOnly("org.testcontainers:mongodb:$testcontainersVer")
 
     implementation("io.fabric8:kubernetes-client:6.8.1")
     implementation("commons-codec:commons-codec:1.16.0")

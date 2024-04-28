@@ -1,5 +1,3 @@
-import com.github.javaparser.JavaParserBuild.JAVA_VERSION
-
 plugins {
     `java-library`
 }
@@ -21,9 +19,10 @@ dependencies {
 
 //    testImplementation("com.github.m4gshm:kubetestcontainers:0.1-SNAPSHOT")
     testImplementation(project(":"))
-    testImplementation("org.testcontainers:postgresql:1.19.7")
-    testImplementation("org.testcontainers:testcontainers:1.19.7")
-    testImplementation("org.testcontainers:mongodb:1.19.7")
+    val testcontainersVer = "1.19.7"
+    testImplementation("org.testcontainers:jdbc:$testcontainersVer")
+    testImplementation("org.testcontainers:postgresql:$testcontainersVer")
+    testImplementation("org.testcontainers:mongodb:$testcontainersVer")
     testImplementation("com.fasterxml.jackson.core:jackson-annotations:2.15.2")//for org.testcontainers:postgresql:1.19.7
 
     testImplementation(platform("org.junit:junit-bom:5.9.1"))
