@@ -16,7 +16,7 @@ import org.testcontainers.containers.JdbcDatabaseContainer;
 @Slf4j
 public abstract class JdbcDatabasePod<SELF extends JdbcDatabasePod<SELF>> extends JdbcDatabaseContainer<SELF> implements PodAware {
 
-    private PodContainerDelegate<SELF> podEngine;
+    private final PodContainerDelegate<SELF> podEngine;
     @Getter
     @Setter
     private String driverClassName;

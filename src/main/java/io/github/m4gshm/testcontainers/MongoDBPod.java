@@ -11,7 +11,7 @@ import org.testcontainers.containers.MongoDBContainer;
 @Slf4j
 public class MongoDBPod extends MongoDBContainer implements PodAware {
 
-    private PodContainerDelegate<MongoDBContainer> podEngine;
+    private final PodContainerDelegate<MongoDBContainer> podEngine;
 
     public MongoDBPod() {
         this("mongo:4.0.10");
