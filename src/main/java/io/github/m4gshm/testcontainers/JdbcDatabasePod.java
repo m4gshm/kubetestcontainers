@@ -38,14 +38,9 @@ public abstract class JdbcDatabasePod<SELF extends JdbcDatabasePod<SELF>> extend
         podEngine = new PodContainerDelegate<>((SELF) this, dockerImageName);
     }
 
-    @Delegate(excludes = Excludes.class)
+    @Delegate
     public PodContainerDelegate<SELF> getPod() {
         return podEngine;
-    }
-
-    @Override
-    public void start() {
-        podEngine.start();
     }
 
     @Override
@@ -74,10 +69,6 @@ public abstract class JdbcDatabasePod<SELF extends JdbcDatabasePod<SELF>> extend
     @Override
     public String toString() {
         return this.getClass().getSimpleName() + "{" + podEngine.toStringFields() + "}";
-    }
-
-    private interface Excludes {
-        void start();
     }
 
 }

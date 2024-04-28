@@ -283,6 +283,12 @@ public class PodContainerDelegate<T extends Container<T>> extends AbstractPod {
         return container;
     }
 
+
+    public T withDeletePodOnError(boolean deletePodOnError) {
+        this.deletePodOnError = deletePodOnError;
+        return container;
+    }
+
     public T withCopyFileToContainer(MountableFile mountableFile, String containerPath) {
         return withCopyToContainer(mountableFile, containerPath);
     }

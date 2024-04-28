@@ -21,7 +21,8 @@ public class KubernetesPostgresqlTest extends AbstractSpringDataJpaTest {
         @SneakyThrows
         protected JdbcDatabaseContainer<?> newContainer() {
             return new PostgresqlPod()
-                    .withDeletePodOnStop(false)
+                    .withDeletePodOnStop(true)
+                    .withDeletePodOnError(true)
                     .withLocalPortForwardHost(getByName("localhost"))
                     .withStartupTimeout(ofSeconds(10))
                     .withConnectTimeoutSeconds(10)

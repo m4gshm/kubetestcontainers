@@ -22,6 +22,8 @@ public class KubernetesRedisTest extends AbstractSpringDataRedisTest {
         @SneakyThrows
         protected GenericContainer<?> newContainer() {
             return new GenericPod<>("redis:5.0.3-alpine")
+                    .withDeletePodOnStop(true)
+                    .withDeletePodOnError(true)
                     .withLocalPortForwardHost(getByName("localhost"))
                     .withExposedPorts(REDIS_PORT);
         }
